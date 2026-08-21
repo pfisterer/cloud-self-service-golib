@@ -1,0 +1,9 @@
+vendor/
+*.exe
+*.DS_Store
+*.log
+tmp/
+.env
+__*
+private/
+private-*

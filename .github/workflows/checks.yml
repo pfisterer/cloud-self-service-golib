@@ -1,0 +1,46 @@
+name: Checks
+
+# Same shape as the services' checks.yml, minus everything they need for their
+# own build: no generated docs, no Docker, no registry. A library has nothing to
+# produce, only something to verify.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          # Follows go.mod rather than a number kept in step with it by hand.
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      # Runs even after a failed vet, so one push reports both problems
+      # instead of hiding the second behind the first.
+      - name: Tests
+        if: '!cancelled()'
+        run: go test ./...
+
+      # go.mod declares the oldest Go version any consumer is on, so that
+      # upgrading this library never forces a Go upgrade on a service. A stray
+      # `go mod tidy` on a newer toolchain silently raises it, which would not
+      # fail any build here — only theirs.
+      - name: go.mod is tidy
+        if: '!cancelled()'
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
