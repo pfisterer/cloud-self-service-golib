@@ -97,6 +97,26 @@ exists, and killing the process over a typo in an optional setting is worse than
 continuing. But a *silent* fallback is how a typo reaches production, so the
 line on stderr is not decoration.
 
+### `authn`
+
+`CutBearerPrefix` and `Scheme` for taking a credential out of an `Authorization`
+header — both were duplicated verbatim, and `Scheme` is what makes a rejected
+request loggable without writing the credential into the log.
+
+`Claims` and `Identity` are here for a different reason. The code was not
+copied; the *answer* has to be the same everywhere. A token issued for a person
+by one service and a group resolved for that person by another only line up if
+both mean the same string by "who this is" — and they did not.
+openstack-management-api fills `PreferredUsername` from an API token and then
+resolves groups by e-mail, so such a token authenticates cleanly and belongs to
+no group at all.
+
+`Identity` is deliberately not called `Email`. Which claim is canonical is
+expected to be reopened: Moodle's LTI privacy settings decide whether names and
+addresses are released at all, and where they are not, an opaque id or a
+matriculation number is all there is. When that changes, this one function
+changes — not a column in three databases.
+
 ### `logging`
 
 Builds the zap logger: coloured console at debug level in development, zap's
