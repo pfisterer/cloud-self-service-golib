@@ -127,6 +127,45 @@ No gin dependency. The gin middleware that two of the three copies carried was
 called from nowhere and was not brought along, which leaves zap as this module's
 only requirement.
 
+### `token` and `tokengorm`
+
+The API tokens people and services use in place of an interactive login.
+
+Tokens stay **scoped to one service** rather than being one platform-wide
+credential, and that is a security decision, not an oversight: a dyndns token
+lives in the clear in a home router's configuration, and a credential that could
+also delete OpenStack projects has no business being there. So each service
+keeps its own tokens, in its own database, under its own prefix. What is shared
+is the part that is easy to get wrong:
+
+- The secret is never stored, only its SHA-256. A plain hash is enough because
+  the secret is 128 bits from `crypto/rand` — there is nothing to brute-force.
+- An expired token is rejected at **lookup**, not merely cleaned up on listing.
+  Cleanup happens when its owner happens to open the page, which is far too rare
+  to rely on.
+- A token that never expires has to be asked for by name (`token.NeverExpires`,
+  which is `-1`). A TTL of zero is an error, so a missing configuration value
+  cannot quietly mint a permanent credential.
+- Revoking requires the owner as well as the ID, so a guessed number cannot take
+  away somebody else's credential.
+
+A `Subject` is whatever the platform calls an identity — see `authn.Identity`.
+Deliberately not "user": the reconciler that provisions course VMs will hold
+tokens too, under a service identity, and nothing here should have to care.
+
+`tokengorm` is separate so that `token` carries no database dependency — a
+service running its storage in memory should not pull GORM in to get at the
+credential logic. Its `Migrate` also performs the one column rename this package
+inherited (`username` → `subject`), guarded and idempotent. That rename is why
+the package exists rather than a bare model: `AutoMigrate` does not rename
+columns, so on the old schema it would add an empty `subject` beside the
+populated `username` and leave every token owned by nobody — no error, just
+lookups that stop finding anything.
+
+The tests use the cgo sqlite driver on purpose: it is the one dynamic-zones
+runs, and column renaming is driver-specific enough that testing it anywhere
+else would prove less than it appears to.
+
 ## Development
 
 ```
