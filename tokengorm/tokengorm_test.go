@@ -80,6 +80,21 @@ func TestMigrateRenamesUsernameKeepingTheValues(t *testing.T) {
 		t.Error("the old column is still there")
 	}
 
+	// Renaming a column leaves its indexes behind under the old name while
+	// AutoMigrate adds the expected ones, so without cleanup the table carries
+	// two indexes on subject and two unique indexes on token_hash — one pair
+	// named after a column that no longer exists.
+	for _, stale := range []string{"idx_tokens_username", "idx_tokens_token_hash"} {
+		if db.Migrator().HasIndex(&Token{}, stale) {
+			t.Errorf("stale index %s survived the migration", stale)
+		}
+	}
+	for _, wanted := range []string{"idx_tokens_subject", "idx_tokens_hash"} {
+		if !db.Migrator().HasIndex(&Token{}, wanted) {
+			t.Errorf("index %s is missing", wanted)
+		}
+	}
+
 	// The point: the existing token still works, for the same person.
 	rec, err := NewStore(db).ByHash(ctx, token.Hash("dynz_token_deadbeef"))
 	if err != nil {

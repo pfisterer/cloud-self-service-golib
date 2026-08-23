@@ -94,9 +94,48 @@ func fromRecord(rec token.Record) Token {
 func Migrate(db *gorm.DB) error {
 	m := db.Migrator()
 
-	if m.HasTable(&Token{}) && m.HasColumn(&Token{}, "username") && !m.HasColumn(&Token{}, "subject") {
-		if err := m.RenameColumn(&Token{}, "username", "subject"); err != nil {
-			return fmt.Errorf("tokengorm.Migrate: renaming username to subject: %w", err)
+	if m.HasTable(&Token{}) {
+		if m.HasColumn(&Token{}, "username") && !m.HasColumn(&Token{}, "subject") {
+			if err := m.RenameColumn(&Token{}, "username", "subject"); err != nil {
+				return fmt.Errorf("tokengorm.Migrate: renaming username to subject: %w", err)
+			}
+		}
+
+		// Renaming a column leaves its indexes behind under their old names, and
+		// AutoMigrate then adds the ones it expects — so the table would end up
+		// with two indexes on subject and two unique indexes on token_hash, one
+		// pair of them named after a column that no longer exists. Harmless to
+		// query, permanent to look at, and a second migration to remove later.
+		//
+		// Dropped rather than renamed, and by raw SQL rather than through the
+		// migrator: GORM's postgres migrator emits invalid SQL for both
+		// RenameIndex and DropIndex here ("syntax error at or near
+		// CURRENT_SCHEMA"). Plain DROP INDEX IF EXISTS is understood by both
+		// drivers that occur in practice, and AutoMigrate recreates the index
+		// below under the name it expects. The gap between the two is inside
+		// startup, before the server accepts a request.
+		//
+		// The names are constants from this file, so there is nothing here to
+		// interpolate unsafely. Dialects other than these two keep their stale
+		// index — no worse than not cleaning up at all.
+		//
+		// GORM derives index names from the FIELD, not the column, which is why
+		// the new hash index is idx_tokens_hash and not idx_tokens_token_hash.
+		switch db.Dialector.Name() {
+		case "postgres", "sqlite":
+			// Unconditional, not "only if the replacement is missing": these
+			// names belong to a schema this package never produces, so their
+			// presence is always leftover. A guard on the replacement would
+			// leave a database that already has both — one that ran an earlier
+			// version of this function — stuck with the duplicate forever.
+			for _, stale := range []string{"idx_tokens_username", "idx_tokens_token_hash"} {
+				if !m.HasIndex(&Token{}, stale) {
+					continue
+				}
+				if err := db.Exec("DROP INDEX IF EXISTS " + stale).Error; err != nil {
+					return fmt.Errorf("tokengorm.Migrate: dropping stale index %s: %w", stale, err)
+				}
+			}
 		}
 	}
 
