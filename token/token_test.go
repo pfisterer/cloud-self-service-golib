@@ -450,3 +450,51 @@ func TestLookupSurvivesAFailingUseWrite(t *testing.T) {
 		t.Errorf("LastUsedAt = %v, want the zero time when the write failed", rec.LastUsedAt)
 	}
 }
+
+func TestTTLPolicyResolve(t *testing.T) {
+	policy := TTLPolicy{Default: 24 * time.Hour, Max: 365 * 24 * time.Hour}
+	permissive := TTLPolicy{Default: 24 * time.Hour, Max: 365 * 24 * time.Hour, AllowNever: true}
+	unbounded := TTLPolicy{Default: time.Hour}
+
+	cases := []struct {
+		name    string
+		policy  TTLPolicy
+		hours   int
+		want    time.Duration
+		wantErr error
+	}{
+		{"nothing asked for", policy, 0, 24 * time.Hour, nil},
+		{"within the maximum", policy, 720, 720 * time.Hour, nil},
+		{"exactly the maximum", policy, 365 * 24, 365 * 24 * time.Hour, nil},
+		// Refused rather than clamped: see Resolve.
+		{"over the maximum", policy, 365*24 + 1, 0, ErrTTLTooLong},
+		{"never, not allowed", policy, RequestedNever, 0, ErrNeverExpiresNotAllowed},
+		{"never, allowed", permissive, RequestedNever, NeverExpires, nil},
+		{"negative but not never", policy, -2, 0, ErrInvalidTTL},
+		// No maximum configured is no bound — but "never" still needs saying.
+		{"no maximum", unbounded, 100000, 100000 * time.Hour, nil},
+		{"no maximum, never still refused", unbounded, RequestedNever, 0, ErrNeverExpiresNotAllowed},
+		// A missing default is a configuration error, not a licence to pick.
+		{"no default", TTLPolicy{}, 0, 0, ErrInvalidTTL},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.policy.Resolve(tc.hours)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if err == nil && got != tc.want {
+				t.Errorf("ttl = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// The whole point of RequestedNever being -1: what an API client sends and what
+// the Service takes are the same value, so nothing has to translate.
+func TestRequestedNeverIsNeverExpires(t *testing.T) {
+	if time.Duration(RequestedNever) != NeverExpires {
+		t.Errorf("RequestedNever = %d, NeverExpires = %d — they must not drift", RequestedNever, NeverExpires)
+	}
+}

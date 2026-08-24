@@ -76,7 +76,73 @@ var (
 	ErrNoSubject = errors.New("token: subject is required")
 	// ErrDescriptionTooLong is returned for a description over MaxDescriptionLen.
 	ErrDescriptionTooLong = fmt.Errorf("token: description must be at most %d characters", MaxDescriptionLen)
+	// ErrTTLTooLong is returned by TTLPolicy.Resolve for a lifetime over its
+	// maximum.
+	ErrTTLTooLong = errors.New("token: requested lifetime is longer than allowed")
+	// ErrNeverExpiresNotAllowed is returned by TTLPolicy.Resolve when a caller
+	// asks for a token without an expiry and the policy forbids it.
+	ErrNeverExpiresNotAllowed = errors.New("token: tokens without an expiry are not allowed here")
 )
+
+// RequestedNever is what an API client sends as the requested lifetime to ask
+// for a token that does not expire. It is -1, the same as NeverExpires, so that
+// there is one way of saying "no expiry" from the request body down to the
+// database row rather than two conventions to keep in step.
+const RequestedNever = -1
+
+// TTLPolicy answers what lifetime a caller may have, given what they asked for.
+//
+// It lives here rather than in each service because the decision table is the
+// same in both and the mistakes are the interesting part: silently shortening a
+// lifetime, or letting a missing configuration value mean "forever". The VALUES
+// are per deployment — one service's tokens sit in home routers, another's can
+// delete OpenStack projects.
+type TTLPolicy struct {
+	// Default applies when the caller asks for nothing. Must be positive: a
+	// zero here is a missing configuration value, and Resolve says so rather
+	// than picking something.
+	Default time.Duration
+	// Max is the longest lifetime a caller may ask for. Zero or less means no
+	// bound, which is what an operator who set nothing gets — a request for
+	// "never" is still refused unless AllowNever says otherwise.
+	Max time.Duration
+	// AllowNever permits a token with no expiry at all.
+	AllowNever bool
+}
+
+// Resolve turns a requested lifetime in hours into a duration.
+//
+// Zero means "no preference" and yields Default. RequestedNever asks for no
+// expiry. Anything else is taken literally and checked against Max.
+//
+// A request over Max is an error and not a quiet clamp: a token that stops
+// working earlier than the person was told is an outage nobody traces back to
+// the moment they created it.
+func (p TTLPolicy) Resolve(requestedHours int) (time.Duration, error) {
+	switch {
+	case requestedHours == 0:
+		if p.Default <= 0 {
+			return 0, fmt.Errorf("%w: no default lifetime is configured", ErrInvalidTTL)
+		}
+		return p.Default, nil
+
+	case requestedHours == RequestedNever:
+		if !p.AllowNever {
+			return 0, ErrNeverExpiresNotAllowed
+		}
+		return NeverExpires, nil
+
+	case requestedHours < 0:
+		return 0, fmt.Errorf("%w: %d hours", ErrInvalidTTL, requestedHours)
+
+	default:
+		ttl := time.Duration(requestedHours) * time.Hour
+		if p.Max > 0 && ttl > p.Max {
+			return 0, fmt.Errorf("%w: %s, maximum is %s", ErrTTLTooLong, ttl, p.Max)
+		}
+		return ttl, nil
+	}
+}
 
 // Record is one issued token, minus the secret — which is what is stored.
 type Record struct {
