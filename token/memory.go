@@ -75,6 +75,19 @@ func (s *MemoryStore) Delete(_ context.Context, subject string, id uint) error {
 	return nil
 }
 
+func (s *MemoryStore) MarkUsed(_ context.Context, id uint, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.records[id]
+	if !ok {
+		return ErrNotFound
+	}
+	rec.LastUsedAt = at
+	s.records[id] = rec
+	return nil
+}
+
 func (s *MemoryStore) DeleteExpired(_ context.Context, before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -53,6 +53,18 @@ const displayChars = 8
 // Handing out a permanent credential should take saying so.
 const NeverExpires = time.Duration(-1)
 
+// MaxDescriptionLen caps the note a person may attach to a token. Long enough
+// for "ddclient on the router at home", short enough that a table column can
+// show all of it — and a bound is needed at all because this is arbitrary text
+// from a request body.
+const MaxDescriptionLen = 100
+
+// lastUsedResolution is how precisely LastUsedAt is kept. Every authenticated
+// request would otherwise be a write, for an answer nobody reads at that
+// resolution: what the field is for is "is this token still in use, or can I
+// revoke it", and a minute is far finer than that question needs.
+const lastUsedResolution = time.Minute
+
 var (
 	// ErrNotFound is returned for a token that does not exist, and for one that
 	// has expired — the caller must not be able to tell those apart.
@@ -62,6 +74,8 @@ var (
 	ErrInvalidTTL = errors.New("token: TTL must be positive or NeverExpires")
 	// ErrNoSubject is returned when no identity was given to issue a token for.
 	ErrNoSubject = errors.New("token: subject is required")
+	// ErrDescriptionTooLong is returned for a description over MaxDescriptionLen.
+	ErrDescriptionTooLong = fmt.Errorf("token: description must be at most %d characters", MaxDescriptionLen)
 )
 
 // Record is one issued token, minus the secret — which is what is stored.
@@ -80,11 +94,21 @@ type Record struct {
 	// ReadOnly limits the token to reads. What that means is the calling
 	// service's decision — for both services today it is "GET only".
 	ReadOnly bool
+	// Description is what its owner wrote down about it: which script, which
+	// machine, why. A memory aid and nothing else — never a permission, never a
+	// key to anything. Being arbitrary user text, it is never logged.
+	Description string
 	// CreatedAt is when the token was issued.
 	CreatedAt time.Time
 	// ExpiresAt is when it stops being accepted. The zero time means never,
 	// which is what NeverExpires produces.
 	ExpiresAt time.Time
+	// LastUsedAt is when the token last authenticated a request, to the nearest
+	// lastUsedResolution. The zero time means it never has.
+	//
+	// This is what makes revoking safe to do: a description says what someone
+	// intended a token for, this says whether anything still relies on it.
+	LastUsedAt time.Time
 }
 
 // Expired reports whether the token is past its expiry at the given time. A
@@ -118,6 +142,11 @@ type Store interface {
 	BySubject(ctx context.Context, subject string) ([]Record, error)
 	// Delete removes the subject's token with this ID, or returns ErrNotFound.
 	Delete(ctx context.Context, subject string, id uint) error
+	// MarkUsed records that the token was used at the given time. No subject:
+	// the Service calls it for a token it has just resolved by hash, so there is
+	// no owner to check against, and this writes nothing a caller could learn
+	// something from.
+	MarkUsed(ctx context.Context, id uint, at time.Time) error
 	// DeleteExpired removes every record that expired before the given time and
 	// returns how many went.
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
@@ -159,19 +188,44 @@ func (s *Service) Owns(secret string) bool {
 	return strings.HasPrefix(secret, s.prefix)
 }
 
+// IssueOptions is everything about a token that its owner gets to choose.
+//
+// A struct rather than parameters: Issue had a TTL and a bool, and the third
+// thing to decide would have made it four positional arguments with two of them
+// unreadable at the call site. Whatever comes next — a scope, a rate budget —
+// belongs in here too.
+type IssueOptions struct {
+	// TTL must be positive, or NeverExpires for a token that stays valid until
+	// revoked. There is no default: a zero value is rejected rather than
+	// silently meaning one thing or the other.
+	//
+	// Whether NeverExpires may be asked for at all is the calling service's
+	// policy, not this package's — both make it a configuration option, off by
+	// default, because a permanent credential is a decision an operator takes.
+	TTL time.Duration
+	// ReadOnly limits the token to reads.
+	ReadOnly bool
+	// Description is the owner's note about the token. Trimmed, and rejected
+	// over MaxDescriptionLen. Optional.
+	Description string
+}
+
 // Issue creates a token for the subject and returns it, including the secret,
 // which the caller has exactly this one chance to pass on.
-//
-// ttl must be positive, or NeverExpires for a token that stays valid until
-// revoked — which is what a service identity running a reconciler needs, and
-// what a person almost never does.
-func (s *Service) Issue(ctx context.Context, subject string, ttl time.Duration, readOnly bool) (*Issued, error) {
+func (s *Service) Issue(ctx context.Context, subject string, opts IssueOptions) (*Issued, error) {
 	subject = strings.TrimSpace(subject)
 	if subject == "" {
 		return nil, ErrNoSubject
 	}
-	if ttl <= 0 && ttl != NeverExpires {
-		return nil, fmt.Errorf("%w, got %s", ErrInvalidTTL, ttl)
+	if opts.TTL <= 0 && opts.TTL != NeverExpires {
+		return nil, fmt.Errorf("%w, got %s", ErrInvalidTTL, opts.TTL)
+	}
+
+	description := strings.TrimSpace(opts.Description)
+	// Counted in runes, not bytes: the limit is about what fits on a screen, and
+	// a note in German would otherwise be shorter than one in English.
+	if len([]rune(description)) > MaxDescriptionLen {
+		return nil, ErrDescriptionTooLong
 	}
 
 	secret, err := generateSecret(s.prefix)
@@ -181,14 +235,15 @@ func (s *Service) Issue(ctx context.Context, subject string, ttl time.Duration, 
 
 	now := s.now()
 	rec := Record{
-		Subject:   subject,
-		Hash:      Hash(secret),
-		Prefix:    displayPrefix(secret),
-		ReadOnly:  readOnly,
-		CreatedAt: now,
+		Subject:     subject,
+		Hash:        Hash(secret),
+		Prefix:      displayPrefix(secret),
+		ReadOnly:    opts.ReadOnly,
+		Description: description,
+		CreatedAt:   now,
 	}
-	if ttl != NeverExpires {
-		rec.ExpiresAt = now.Add(ttl)
+	if opts.TTL != NeverExpires {
+		rec.ExpiresAt = now.Add(opts.TTL)
 	}
 
 	stored, err := s.store.Insert(ctx, rec)
@@ -204,13 +259,27 @@ func (s *Service) Issue(ctx context.Context, subject string, ttl time.Duration, 
 //
 // An expired token is ErrNotFound, not a distinct answer: the caller has no use
 // for the difference and an attacker would.
+//
+// It also records the use, at most once per lastUsedResolution. A failure to
+// write that is deliberately ignored: this sits on the authentication path of
+// every request, and a valid credential must not be refused because a
+// bookkeeping column could not be updated. The cost is a LastUsedAt that can
+// lag; the alternative is an outage for a field nobody authenticates against.
 func (s *Service) Lookup(ctx context.Context, secret string) (*Record, error) {
 	rec, err := s.store.ByHash(ctx, Hash(secret))
 	if err != nil {
 		return nil, err
 	}
-	if rec.Expired(s.now()) {
+	now := s.now()
+	if rec.Expired(now) {
 		return nil, ErrNotFound
+	}
+
+	if now.Sub(rec.LastUsedAt) >= lastUsedResolution {
+		if err := s.store.MarkUsed(ctx, rec.ID, now); err == nil {
+			// Only on success, so the returned record says what is stored.
+			rec.LastUsedAt = now
+		}
 	}
 	return &rec, nil
 }

@@ -128,7 +128,7 @@ func TestStoreRoundtrip(t *testing.T) {
 	store, _ := migratedStore(t)
 	svc := token.NewService("dynz_token_", store)
 
-	issued, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	issued, err := svc.Issue(ctx, "alice@example.edu", token.IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestSecretIsNotStored(t *testing.T) {
 	store, db := migratedStore(t)
 	svc := token.NewService("dynz_token_", store)
 
-	issued, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	issued, err := svc.Issue(ctx, "alice@example.edu", token.IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestDeleteIsScopedToTheOwner(t *testing.T) {
 	store, _ := migratedStore(t)
 	svc := token.NewService("dynz_token_", store)
 
-	issued, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	issued, err := svc.Issue(ctx, "alice@example.edu", token.IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -211,11 +211,11 @@ func TestDeleteExpiredSparesPermanentTokens(t *testing.T) {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	svc := token.NewService("dynz_token_", store).WithClock(func() time.Time { return now })
 
-	permanent, err := svc.Issue(ctx, "service@example.edu", token.NeverExpires, false)
+	permanent, err := svc.Issue(ctx, "service@example.edu", token.IssueOptions{TTL: token.NeverExpires})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	shortLived, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	shortLived, err := svc.Issue(ctx, "alice@example.edu", token.IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -242,6 +242,100 @@ func TestByHashUnknown(t *testing.T) {
 	store, _ := migratedStore(t)
 
 	if _, err := store.ByHash(ctx, token.Hash("nope")); !errors.Is(err, token.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// The rows that existed before this package grew the two columns have NULL in
+// both, because AutoMigrate adds a column without filling it in. Scanning NULL
+// into a string or a time.Time is an error, so without the pointers in the row
+// struct this listing fails entirely — every token of every user, unreadable,
+// for two fields that are decoration.
+func TestMigrateToleratesNullInTheNewColumns(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+
+	// A row from before description and last_used_at existed.
+	type tokenWithoutTheNewColumns struct {
+		ID        uint `gorm:"primaryKey"`
+		CreatedAt time.Time
+		Subject   string `gorm:"column:subject;index"`
+		Hash      string `gorm:"column:token_hash;uniqueIndex"`
+		Prefix    string `gorm:"column:token_prefix"`
+		ReadOnly  bool
+		ExpiresAt time.Time
+	}
+	if err := db.Table("tokens").AutoMigrate(&tokenWithoutTheNewColumns{}); err != nil {
+		t.Fatalf("creating the old table: %v", err)
+	}
+	if err := db.Table("tokens").Create(&tokenWithoutTheNewColumns{
+		Subject:   "alice@example.edu",
+		Hash:      token.Hash("dynz_token_deadbeef"),
+		Prefix:    "dynz_token_deadbeef"[:19],
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}).Error; err != nil {
+		t.Fatalf("seeding a token: %v", err)
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := NewStore(db)
+	rec, err := store.ByHash(ctx, token.Hash("dynz_token_deadbeef"))
+	if err != nil {
+		t.Fatalf("the pre-existing token cannot be looked up: %v", err)
+	}
+	if rec.Description != "" || !rec.LastUsedAt.IsZero() {
+		t.Errorf("NULL should read as empty, got %q / %v", rec.Description, rec.LastUsedAt)
+	}
+	// The listing path reads the same columns, and it is the one a person hits.
+	list, err := store.BySubject(ctx, "alice@example.edu")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("BySubject: %v (%d rows)", err, len(list))
+	}
+}
+
+func TestDescriptionAndLastUsedSurviveTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	store, _ := migratedStore(t)
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	svc := token.NewService("dynz_token_", store).WithClock(func() time.Time { return now })
+
+	issued, err := svc.Issue(ctx, "alice@example.edu", token.IssueOptions{
+		TTL: time.Hour, Description: "ddclient on the router at home",
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	rec, err := svc.Lookup(ctx, issued.Secret)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if rec.Description != "ddclient on the router at home" {
+		t.Errorf("Description = %q", rec.Description)
+	}
+	if !rec.LastUsedAt.UTC().Equal(now) {
+		t.Errorf("LastUsedAt = %v, want %v", rec.LastUsedAt, now)
+	}
+
+	// And it is the row that says so, not the record the lookup happened to
+	// return: MarkUsed is a separate statement.
+	fresh, err := store.ByHash(ctx, issued.Hash)
+	if err != nil {
+		t.Fatalf("ByHash: %v", err)
+	}
+	if !fresh.LastUsedAt.UTC().Equal(now) {
+		t.Errorf("stored LastUsedAt = %v, want %v", fresh.LastUsedAt, now)
+	}
+}
+
+func TestMarkUsedUnknownToken(t *testing.T) {
+	ctx := context.Background()
+	store, _ := migratedStore(t)
+
+	if err := store.MarkUsed(ctx, 4711, time.Now()); !errors.Is(err, token.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }

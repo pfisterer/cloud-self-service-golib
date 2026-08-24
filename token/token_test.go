@@ -21,7 +21,7 @@ func TestIssueSecretShape(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t, time.Now())
 
-	issued, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestIssueSecretsAreUnique(t *testing.T) {
 
 	seen := make(map[string]struct{}, 100)
 	for i := 0; i < 100; i++ {
-		issued, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+		issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
@@ -86,7 +86,7 @@ func TestIssueRejectsBadInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := svc.Issue(ctx, tc.subject, tc.ttl, false); !errors.Is(err, tc.want) {
+			if _, err := svc.Issue(ctx, tc.subject, IssueOptions{TTL: tc.ttl}); !errors.Is(err, tc.want) {
 				t.Errorf("Issue: err = %v, want %v", err, tc.want)
 			}
 		})
@@ -98,7 +98,7 @@ func TestNeverExpires(t *testing.T) {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	svc, _ := newTestService(t, now)
 
-	issued, err := svc.Issue(ctx, "service@example.edu", NeverExpires, false)
+	issued, err := svc.Issue(ctx, "service@example.edu", IssueOptions{TTL: NeverExpires})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestLookup(t *testing.T) {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	svc, _ := newTestService(t, now)
 
-	issued, err := svc.Issue(ctx, "alice@example.edu", time.Hour, true)
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour, ReadOnly: true})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestLookupExactlyAtExpiry(t *testing.T) {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	svc, _ := newTestService(t, now)
 
-	issued, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -178,14 +178,14 @@ func TestListDropsAndDeletesExpired(t *testing.T) {
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	svc, store := newTestService(t, now)
 
-	shortLived, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	shortLived, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if _, err := svc.Issue(ctx, "alice@example.edu", 24*time.Hour, false); err != nil {
+	if _, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: 24 * time.Hour}); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if _, err := svc.Issue(ctx, "bob@example.edu", time.Hour, false); err != nil {
+	if _, err := svc.Issue(ctx, "bob@example.edu", IssueOptions{TTL: time.Hour}); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 
@@ -214,10 +214,10 @@ func TestListIsScopedToTheSubject(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t, time.Now())
 
-	if _, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false); err != nil {
+	if _, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour}); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if _, err := svc.Issue(ctx, "bob@example.edu", time.Hour, false); err != nil {
+	if _, err := svc.Issue(ctx, "bob@example.edu", IssueOptions{TTL: time.Hour}); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 
@@ -236,7 +236,7 @@ func TestRevokeRequiresOwnership(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t, time.Now())
 
-	alices, err := svc.Issue(ctx, "alice@example.edu", time.Hour, false)
+	alices, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -292,11 +292,11 @@ func TestDeleteExpiredSweepsEverySubject(t *testing.T) {
 	svc, _ := newTestService(t, now)
 
 	for _, subject := range []string{"alice@example.edu", "bob@example.edu"} {
-		if _, err := svc.Issue(ctx, subject, time.Hour, false); err != nil {
+		if _, err := svc.Issue(ctx, subject, IssueOptions{TTL: time.Hour}); err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
 	}
-	if _, err := svc.Issue(ctx, "service@example.edu", NeverExpires, false); err != nil {
+	if _, err := svc.Issue(ctx, "service@example.edu", IssueOptions{TTL: NeverExpires}); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 
@@ -307,5 +307,146 @@ func TestDeleteExpiredSweepsEverySubject(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("deleted %d, want 2 — the never-expiring token must survive", n)
+	}
+}
+
+func TestIssueTrimsTheDescription(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t, time.Now())
+
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{
+		TTL:         time.Hour,
+		Description: "  ddclient on the router at home \n",
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if issued.Description != "ddclient on the router at home" {
+		t.Errorf("Description = %q, want it trimmed", issued.Description)
+	}
+}
+
+// The limit is about what fits in a column, so it counts characters and not
+// bytes: a note in German must not be shorter than the same note in English.
+func TestIssueRejectsAnOverlongDescription(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t, time.Now())
+
+	cases := []struct {
+		name        string
+		description string
+		want        error
+	}{
+		{"at the limit", strings.Repeat("a", MaxDescriptionLen), nil},
+		{"one over", strings.Repeat("a", MaxDescriptionLen+1), ErrDescriptionTooLong},
+		// Three bytes each, so this is well over the byte limit and exactly at
+		// the character limit. It must be accepted.
+		{"multibyte at the limit", strings.Repeat("ü", MaxDescriptionLen), nil},
+		{"multibyte one over", strings.Repeat("ü", MaxDescriptionLen+1), ErrDescriptionTooLong},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{
+				TTL: time.Hour, Description: tc.description,
+			})
+			if !errors.Is(err, tc.want) {
+				t.Errorf("err = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLookupRecordsTheUse(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(t, now)
+
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if !issued.LastUsedAt.IsZero() {
+		t.Error("a token that was just issued has not been used")
+	}
+
+	rec, err := svc.Lookup(ctx, issued.Secret)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if !rec.LastUsedAt.Equal(now) {
+		t.Errorf("returned LastUsedAt = %v, want %v", rec.LastUsedAt, now)
+	}
+	stored, err := store.ByHash(ctx, issued.Hash)
+	if err != nil {
+		t.Fatalf("ByHash: %v", err)
+	}
+	if !stored.LastUsedAt.Equal(now) {
+		t.Errorf("stored LastUsedAt = %v, want %v", stored.LastUsedAt, now)
+	}
+}
+
+// Every authenticated request would otherwise be a database write for a field
+// nobody reads at that resolution.
+func TestLookupThrottlesTheUseWrite(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(t, now)
+
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, err := svc.Lookup(ctx, issued.Secret); err != nil {
+		t.Fatalf("first Lookup: %v", err)
+	}
+
+	within := svc.WithClock(func() time.Time { return now.Add(lastUsedResolution / 2) })
+	if _, err := within.Lookup(ctx, issued.Secret); err != nil {
+		t.Fatalf("second Lookup: %v", err)
+	}
+	stored, _ := store.ByHash(ctx, issued.Hash)
+	if !stored.LastUsedAt.Equal(now) {
+		t.Errorf("LastUsedAt = %v, want it left at %v inside the window", stored.LastUsedAt, now)
+	}
+
+	after := now.Add(lastUsedResolution + time.Second)
+	beyond := svc.WithClock(func() time.Time { return after })
+	if _, err := beyond.Lookup(ctx, issued.Secret); err != nil {
+		t.Fatalf("third Lookup: %v", err)
+	}
+	stored, _ = store.ByHash(ctx, issued.Hash)
+	if !stored.LastUsedAt.Equal(after) {
+		t.Errorf("LastUsedAt = %v, want %v once the window has passed", stored.LastUsedAt, after)
+	}
+}
+
+// failingMarkUsed is a Store whose bookkeeping write always fails.
+type failingMarkUsed struct{ Store }
+
+func (failingMarkUsed) MarkUsed(context.Context, uint, time.Time) error {
+	return errors.New("column is on fire")
+}
+
+// A valid credential must not be refused because a statistics column could not
+// be written — this sits on the authentication path of every request.
+func TestLookupSurvivesAFailingUseWrite(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	store := NewMemoryStore()
+	svc := NewService(testPrefix, failingMarkUsed{store}).WithClock(func() time.Time { return now })
+
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	rec, err := svc.Lookup(ctx, issued.Secret)
+	if err != nil {
+		t.Fatalf("Lookup failed because MarkUsed did: %v", err)
+	}
+	// And it must not claim a use it could not record.
+	if !rec.LastUsedAt.IsZero() {
+		t.Errorf("LastUsedAt = %v, want the zero time when the write failed", rec.LastUsedAt)
 	}
 }

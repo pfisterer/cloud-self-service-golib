@@ -49,6 +49,20 @@ type Token struct {
 
 	// ExpiresAt is the zero time for a token that does not expire.
 	ExpiresAt time.Time
+
+	// Description and LastUsedAt are pointers, unlike every other field here,
+	// and the reason is migration: AutoMigrate adds a column to an existing
+	// table without a value for the rows already in it, so every token issued
+	// before this change has NULL in both. Scanning NULL into a string or a
+	// time.Time fails — the whole list would error out rather than show one
+	// empty cell. A pointer reads NULL as nil, which toRecord turns into the
+	// zero value.
+	//
+	// Not solved by a backfill UPDATE: that fixes the rows that exist at
+	// migration time and says nothing about a database restored from an older
+	// backup afterwards.
+	Description *string `gorm:"column:description"`
+	LastUsedAt  *time.Time
 }
 
 // TableName pins the table so that renaming the Go type cannot silently point
@@ -56,7 +70,7 @@ type Token struct {
 func (Token) TableName() string { return "tokens" }
 
 func (t Token) toRecord() token.Record {
-	return token.Record{
+	rec := token.Record{
 		ID:        t.ID,
 		Subject:   t.Subject,
 		Hash:      t.Hash,
@@ -65,10 +79,17 @@ func (t Token) toRecord() token.Record {
 		CreatedAt: t.CreatedAt,
 		ExpiresAt: t.ExpiresAt,
 	}
+	if t.Description != nil {
+		rec.Description = *t.Description
+	}
+	if t.LastUsedAt != nil {
+		rec.LastUsedAt = *t.LastUsedAt
+	}
+	return rec
 }
 
 func fromRecord(rec token.Record) Token {
-	return Token{
+	row := Token{
 		ID:        rec.ID,
 		Subject:   rec.Subject,
 		Hash:      rec.Hash,
@@ -77,6 +98,16 @@ func fromRecord(rec token.Record) Token {
 		CreatedAt: rec.CreatedAt,
 		ExpiresAt: rec.ExpiresAt,
 	}
+	// Written as a value even when empty, so a row this package inserts never
+	// carries the NULL the pointers exist to tolerate. Only LastUsedAt stays
+	// nil, because "never used" is the truth for a token being created.
+	description := rec.Description
+	row.Description = &description
+	if !rec.LastUsedAt.IsZero() {
+		used := rec.LastUsedAt
+		row.LastUsedAt = &used
+	}
+	return row
 }
 
 // Migrate brings the tokens table up to date, including the one rename this
@@ -214,6 +245,23 @@ func (s *Store) Delete(ctx context.Context, subject string, id uint) error {
 
 	if result.Error != nil {
 		return fmt.Errorf("tokengorm.Delete: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return token.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) MarkUsed(ctx context.Context, id uint, at time.Time) error {
+	// One column, by primary key, and no returning clause: this runs on the
+	// authentication path of every request that uses a token.
+	result := s.db.WithContext(ctx).
+		Model(&Token{}).
+		Where("id = ?", id).
+		Update("last_used_at", at)
+
+	if result.Error != nil {
+		return fmt.Errorf("tokengorm.MarkUsed: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return token.ErrNotFound
