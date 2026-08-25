@@ -22,6 +22,11 @@ Applied to what exists today:
   The mappings differ deliberately: one falls back to 400 with a documented
   reason, another to 500. A shared version would have to flatten a distinction
   somebody made on purpose.
+- `mcpserve` qualifies — the wiring around an MCP endpoint was written twice,
+  and the read-only gate came out character-for-character identical both times.
+  What did *not* come along is the error rendering: one service wraps the cause,
+  the other deliberately shows only the message. That is the same kind of
+  distinction as the HTTP mapping above, so it stayed put.
 - Anything that mentions a zone, a project, a group or a quota does not qualify
   by definition.
 
@@ -165,6 +170,41 @@ lookups that stop finding anything.
 The tests use the cgo sqlite driver on purpose: it is the one dynamic-zones
 runs, and column renaming is driver-specific enough that testing it anywhere
 else would prove less than it appears to.
+
+### `mcpserve`
+
+Serving an MCP endpoint, minus the tools. Three things, all of which existed
+twice before this package did:
+
+- **`AddTool`** — the read-only rule for MCP. Every MCP call is a POST, reads
+  included, so the HTTP method cannot stand in for "does this change
+  something" the way it can for REST; the tool says what it does and the check
+  runs against that. A mutating tool is left *out* for a read-only credential
+  rather than offered and refused: a model picks from the tools it is shown, and
+  one that always fails invites it to retry differently.
+- **`Handler`** — MCP over HTTP, building a fresh server per request around the
+  caller in that request's context, so a tool closes over the identity that
+  called it. This is the one place the shared version is stricter than both
+  originals: they took the caller with a discarded `ok`, and a request that
+  somehow reached the handler unauthenticated was served with a zero-valued
+  caller — no identity, `ReadOnly()` false. The most permissive caller there is,
+  produced by the situation that should produce the least. Here it is a 401.
+- **`ConfirmEcho`** — the "type the name back" step in front of a destructive
+  tool. It is not a defence against prompt injection, and the doc comment says
+  so: injected text can quote a name as easily as invent one. It catches a model
+  that resolved "the old one" to the wrong thing, and it puts the real name in
+  front of the person approving the call.
+
+`Caller` is an interface with a single method, `ReadOnly() bool`. Who the caller
+*is* never travels through this package — each service keeps its own caller type
+with whatever identity it needs, and `WithCaller`/`CallerFrom` carry it through
+the context, typed per caller type so one kind cannot be read as another.
+
+No gin, though both consumers use it: a router is a few lines of glue that
+belong to the service, and taking a web framework in here for them would push
+that choice onto every consumer, including the one that serves no MCP endpoint.
+The MCP SDK itself does become a dependency of the module — a consumer that
+imports no `mcpserve` still does not link it, but it does appear in `go.sum`.
 
 ## Development
 
