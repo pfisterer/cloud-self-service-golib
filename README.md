@@ -128,9 +128,34 @@ Builds the zap logger: coloured console at debug level in development, zap's
 JSON production logger otherwise. `Writer` adapts it to `io.Writer` for
 libraries that insist on writing to one, such as gin's default output.
 
-No gin dependency. The gin middleware that two of the three copies carried was
-called from nowhere and was not brought along, which leaves zap as this module's
-only requirement.
+No gin dependency in `logging` itself: `Writer` is an `io.Writer`, so it stands
+in front of gin's output without importing gin. The gin *middleware* that shares
+across services lives in `ginweb`, its own package — see there for why gin is
+allowed into the module at all.
+
+### `redact`
+
+`Secret` and `ConnString` make a secret safe to put in a log line. Every service
+logs its resolved configuration at startup, and that holds API keys, TSIG keys
+and database passwords; each had grown its own masking helper and they had
+drifted (one showed a prefix, one truncated a whole DSN to four bytes and lost
+the host). `ConnString` redacts only the `password=` field of a key-value DSN,
+so a broken connection is still diagnosable. No dependencies.
+
+### `ginweb`
+
+The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the
+reflected-origin-safe policy plus the OPTIONS preflight catch-all), `DisableCaching`,
+and the read-only-token rule (`SetReadOnly`, `IsReadOnly`, `RejectWritesForReadOnlyTokens`).
+
+This is the one place the module takes gin, and the reasoning is `mcpserve`'s:
+a consumer that imports no `ginweb` still does not link gin because of it, but
+every consumer that *does* serve a gin router shares one implementation instead
+of three that drift. The CORS policy earns the exception on its own — a
+reflected-origin mistake is a credential leak, and a rule that has to be right
+must not live in three files at once. What stays per service is the thin glue:
+building the router, and the auth middleware that decides a token's read-only
+flag and calls `SetReadOnly`.
 
 ### `token` and `tokengorm`
 
@@ -200,11 +225,12 @@ twice before this package did:
 with whatever identity it needs, and `WithCaller`/`CallerFrom` carry it through
 the context, typed per caller type so one kind cannot be read as another.
 
-No gin, though both consumers use it: a router is a few lines of glue that
-belong to the service, and taking a web framework in here for them would push
-that choice onto every consumer, including the one that serves no MCP endpoint.
-The MCP SDK itself does become a dependency of the module — a consumer that
-imports no `mcpserve` still does not link it, but it does appear in `go.sum`.
+No gin here in `mcpserve`: an MCP router is a few lines of glue that belong to
+the service. The gin middleware that genuinely *did* repeat across services —
+CORS, caching, the read-only rule — lives in `ginweb` instead, on the same terms
+this package set: only a consumer that imports it links gin. The MCP SDK itself
+does become a dependency of the module — a consumer that imports no `mcpserve`
+still does not link it, but it does appear in `go.sum`.
 
 ## Development
 
