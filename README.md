@@ -47,6 +47,8 @@ go get github.com/pfisterer/cloud-self-service-golib@latest
 
 ```go
 import (
+    "strings"
+
     "github.com/pfisterer/cloud-self-service-golib/envconf"
     "github.com/pfisterer/cloud-self-service-golib/logging"
 )
@@ -122,6 +124,8 @@ addresses are released at all, and where they are not, an opaque id or a
 matriculation number is all there is. When that changes, this one function
 changes — not a column in three databases.
 
+Today `Identity` is the e-mail address, falling back to `preferred_username` and then `sub` for a provider that releases no address. It does not lowercase: the value is already stored as the owner of zones and tokens, and folding case would silently stop matching what is on disk.
+
 ### `logging`
 
 Builds the zap logger: coloured console at debug level in development, zap's
@@ -144,9 +148,9 @@ so a broken connection is still diagnosable. No dependencies.
 
 ### `ginweb`
 
-The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the
-reflected-origin-safe policy plus the OPTIONS preflight catch-all), `DisableCaching`,
-and the read-only-token rule (`SetReadOnly`, `IsReadOnly`, `RejectWritesForReadOnlyTokens`).
+The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the reflected-origin-safe policy plus the OPTIONS preflight catch-all), `DisableCaching`, and the read-only-token rule (`SetReadOnly`, `IsReadOnly`, `RejectWritesForReadOnlyTokens`).
+
+`EnableCORS` takes a `CORSOptions`: exact origins in `AllowedOrigins` (empty means no cross-origin access at all, which is right when the UI reaches the API same-origin), `DevMode` to additionally allow loopback origins for a local dev server, and `AllowMethods`/`AllowHeaders` that fall back to a common default when nil. It never reflects the request origin; an unlisted origin is refused. `RejectWritesForReadOnlyTokens` refuses anything but GET for a read-only token with a 403, which is why it belongs on the REST route group and not in the auth middleware — an MCP call is always a POST, reads included.
 
 This is the one place the module takes gin, and the reasoning is `mcpserve`'s:
 a consumer that imports no `ginweb` still does not link gin because of it, but
@@ -178,6 +182,9 @@ is the part that is easy to get wrong:
   cannot quietly mint a permanent credential.
 - Revoking requires the owner as well as the ID, so a guessed number cannot take
   away somebody else's credential.
+- A request over a configured maximum lifetime is an error, not a quiet clamp: `TTLPolicy` (`Default`, `Max`, `AllowNever`) turns the hours a client asked for into a TTL, with 0 meaning the default and `token.RequestedNever` (also `-1`) asking for no expiry. The values are per deployment; the decision table is shared.
+
+`token.Service` is created with `NewService(prefix, store)`; the prefix (e.g. `dynz_token_`) is what `Owns` checks so an auth middleware can tell a service token from an OIDC bearer token — it routes, it does not validate. `Issue` takes `IssueOptions` (TTL, read-only, and an optional description of at most `MaxDescriptionLen` characters) and returns the secret exactly once; `Lookup`, `List`, `Revoke` and `DeleteExpired` do the rest. `Lookup` also records `LastUsedAt`, at most once a minute, and ignores a failure to write it: a valid credential must not be refused over a bookkeeping column. `NewMemoryStore` is the in-memory `Store`, for a service running without a database and for tests.
 
 A `Subject` is whatever the platform calls an identity — see `authn.Identity`.
 Deliberately not "user": the reconciler that provisions course VMs will hold
@@ -191,6 +198,8 @@ the package exists rather than a bare model: `AutoMigrate` does not rename
 columns, so on the old schema it would add an empty `subject` beside the
 populated `username` and leave every token owned by nobody — no error, just
 lookups that stop finding anything.
+
+Use `tokengorm.NewService(prefix, db)` rather than `NewStore`: it runs `Migrate` first, so a service cannot start on an unmigrated table. `Migrate` also drops the indexes the rename left behind under their old names (on PostgreSQL and SQLite), so the table does not end up with duplicate indexes.
 
 The tests use the cgo sqlite driver on purpose: it is the one dynamic-zones
 runs, and column renaming is driver-specific enough that testing it anywhere
@@ -235,7 +244,8 @@ still does not link it, but it does appear in `go.sum`.
 ## Development
 
 ```
+make check   # go vet + go test (default target)
 make test    # go test ./...
-make check   # go vet ./...
+make vet     # go vet ./...
 make tidy    # go mod tidy
 ```
