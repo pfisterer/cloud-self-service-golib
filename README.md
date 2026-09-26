@@ -126,6 +126,30 @@ changes — not a column in three databases.
 
 Today `Identity` is the e-mail address, falling back to `preferred_username` and then `sub` for a provider that releases no address. It does not lowercase: the value is already stored as the owner of zones and tokens, and folding case would silently stop matching what is on disk.
 
+### `oidcauth`
+
+Verifies OIDC ID tokens, and does not make the identity provider a condition for
+starting up. Both services used to build their verifier with
+`oidc.NewProvider`, which fetches the issuer's discovery document, and treated a
+failure as fatal. On 2026-09-25 the university's Keycloak went down during a
+power cut: every pod that happened to restart in that window died and stayed in
+CrashLoopBackOff, so the self-service was unreachable for hours after its own
+cluster was healthy again.
+
+Give `Config.JWKSURL` and the endpoint is configuration rather than a discovery
+result: nothing is fetched until there is a token to check, the keys are cached
+afterwards, and an outage costs only the tokens whose signing key is not yet
+known. Leave it empty and discovery still happens, which is what the local and
+mock setups use.
+
+`Verify` separates two failures that look identical from the inside: a token
+this service rejects, and a token it cannot judge because the provider is away
+(`ErrKeysUnavailable`). Callers answer 401 for the first and 503 for the second
+— a 401 tells the browser to drop its session and sign in again, which is
+exactly what cannot be done while the provider is down. `KeysUnavailable` and
+`LastKeyFetchError` are for a status endpoint, so the UI can say what is wrong
+instead of showing a login that cannot work.
+
 ### `logging`
 
 Builds the zap logger: coloured console at debug level in development, zap's
