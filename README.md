@@ -124,7 +124,7 @@ addresses are released at all, and where they are not, an opaque id or a
 matriculation number is all there is. When that changes, this one function
 changes — not a column in three databases.
 
-Today `Identity` is the e-mail address, falling back to `preferred_username` and then `sub` for a provider that releases no address. It does not lowercase: the value is already stored as the owner of zones and tokens, and folding case would silently stop matching what is on disk.
+Today `Identity` is the e-mail address, falling back to `preferred_username` and then `sub` for a provider that releases no address. An address is lowercased, because providers release it in whatever case the directory holds and two spellings of one address are one person; opaque fallbacks keep their case.
 
 ### `oidcauth`
 

@@ -34,10 +34,12 @@ type Claims struct {
 // matriculation number is all there is. When that day comes, this function is
 // what changes — not a column in three databases.
 //
-// No lowercasing, deliberately. Addresses compare case-insensitively in
-// principle, but this value is already stored as the owner of zones and the
-// owner of tokens; folding case here would silently stop matching what is on
-// disk. That is a migration, not a helper change.
+// An e-mail address is lowercased. Addresses compare case-insensitively, and
+// identity providers release them in whatever case the directory holds, so
+// "A.B@x" and "a.b@x" arrive as two spellings of one person. Every service
+// stores and compares the lowercase form; lowercasing here, at the one place
+// an identity enters, means no comparison anywhere has to remember it. The
+// other fallbacks are opaque ids and keep their case.
 func (c *Claims) Identity() string {
 	if c == nil {
 		return ""
@@ -45,6 +47,9 @@ func (c *Claims) Identity() string {
 
 	for _, candidate := range []string{c.Email, c.PreferredUsername, c.Subject} {
 		if v := strings.TrimSpace(candidate); v != "" {
+			if strings.Contains(v, "@") {
+				return strings.ToLower(v)
+			}
 			return v
 		}
 	}

@@ -38,13 +38,16 @@ func TestClaimsIdentity(t *testing.T) {
 			claims: &Claims{Email: "  alice@example.edu  "},
 			want:   "alice@example.edu",
 		},
-		// Case is preserved on purpose: this value is already on disk as the
-		// owner of zones and of API tokens. Folding it here would stop matching
-		// what is stored.
+		// Two spellings of one address are one person.
 		{
-			name:   "case is preserved",
+			name:   "an address is lowercased",
 			claims: &Claims{Email: "Alice@Example.EDU"},
-			want:   "Alice@Example.EDU",
+			want:   "alice@example.edu",
+		},
+		{
+			name:   "an opaque id keeps its case",
+			claims: &Claims{Subject: "AbC-123"},
+			want:   "AbC-123",
 		},
 	}
 
