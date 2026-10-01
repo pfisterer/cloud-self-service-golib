@@ -247,6 +247,7 @@ twice before this package did:
   somehow reached the handler unauthenticated was served with a zero-valued
   caller — no identity, `ReadOnly()` false. The most permissive caller there is,
   produced by the situation that should produce the least. Here it is a 401.
+  The handler is stateless: the MCP protocol from `2026-07-28` on is served only that way, and a server per request keeps no session anyway. Clients still on the session-based protocol are served too, without a session id; a GET for a notification stream gets 405, since no tool sends one.
 - **`ConfirmEcho`** — the "type the name back" step in front of a destructive
   tool. It is not a defence against prompt injection, and the doc comment says
   so: injected text can quote a name as easily as invent one. It catches a model

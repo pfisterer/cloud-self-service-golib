@@ -65,11 +65,18 @@ func serve(t *testing.T, caller *testCaller) *httptest.Server {
 
 func connect(t *testing.T, srv *httptest.Server) *mcp.ClientSession {
 	t.Helper()
+	return connectAt(t, srv, "")
+}
+
+// connectAt connects asking for the given protocol version; empty asks for the
+// newest the SDK knows.
+func connectAt(t *testing.T, srv *httptest.Server, version string) *mcp.ClientSession {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1"}, nil).
-		Connect(ctx, &mcp.StreamableClientTransport{Endpoint: srv.URL}, nil)
+		Connect(ctx, &mcp.StreamableClientTransport{Endpoint: srv.URL}, &mcp.ClientSessionOptions{ProtocolVersion: version})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -148,6 +155,29 @@ func TestHandler_ToolsRunAsTheCallerInTheContext(t *testing.T) {
 	}
 	if out["caller"] != "alice" {
 		t.Errorf("tool ran as %v, want alice", out["caller"])
+	}
+}
+
+// A client that speaks the stateless protocol gets it, and one that still
+// speaks the session-based one is served as before: clients move over on their
+// own schedule.
+func TestHandler_ServesTheStatelessAndTheSessionProtocol(t *testing.T) {
+	srv := serve(t, &testCaller{name: "alice"})
+	for _, tc := range []struct{ ask, want string }{
+		{"", "2026-07-28"},
+		{"2025-11-25", "2025-11-25"},
+		{"2025-06-18", "2025-06-18"},
+	} {
+		session := connectAt(t, srv, tc.ask)
+		if got := session.InitializeResult().ProtocolVersion; got != tc.want {
+			t.Errorf("asked for %q, negotiated %q, want %q", tc.ask, got, tc.want)
+		}
+		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+			Name: "write_thing", Arguments: map[string]any{"text": "hello"},
+		})
+		if err != nil || res.IsError {
+			t.Errorf("protocol %q: call failed: %v %+v", tc.want, err, res)
+		}
 	}
 }
 

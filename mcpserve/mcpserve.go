@@ -62,10 +62,14 @@ func CallerFrom[C Caller](ctx context.Context) (C, bool) {
 // is the most permissive caller there is, produced by the one situation that
 // should produce the least: authentication did not run.
 func Handler[C Caller](build func(C) *mcp.Server) http.Handler {
+	// Stateless: the protocol from 2026-07-28 on is served only in this mode,
+	// and it is the one that fits — a server per request already keeps no
+	// session, and no tool calls back into the client. Clients still on the
+	// session-based protocol are served as well, without a session id.
 	inner := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		caller, _ := CallerFrom[C](r.Context())
 		return build(caller)
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{Stateless: true})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := CallerFrom[C](r.Context()); !ok {
