@@ -45,7 +45,7 @@ func DisableCaching() gin.HandlerFunc {
 // lists them.
 type CORSOptions struct {
 	// AllowedOrigins are the exact browser origins permitted cross-origin
-	// (e.g. "https://selfservice.dhbw.cloud"). Empty means none — the right
+	// (e.g. "https://selfservice.example.org"). Empty means none — the right
 	// default when the SPA reaches the API same-origin through a BFF.
 	AllowedOrigins []string
 	// DevMode additionally allows any loopback origin, so the local Vite dev

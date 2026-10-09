@@ -128,13 +128,7 @@ Today `Identity` is the e-mail address, falling back to `preferred_username` and
 
 ### `oidcauth`
 
-Verifies OIDC ID tokens, and does not make the identity provider a condition for
-starting up. Both services used to build their verifier with
-`oidc.NewProvider`, which fetches the issuer's discovery document, and treated a
-failure as fatal. On 2026-09-25 the university's Keycloak went down during a
-power cut: every pod that happened to restart in that window died and stayed in
-CrashLoopBackOff, so the self-service was unreachable for hours after its own
-cluster was healthy again.
+Verifies OIDC ID tokens, and does not make the identity provider a condition for starting up. Both services used to build their verifier with `oidc.NewProvider`, which fetches the issuer's discovery document, and treated a failure as fatal: while the provider was unreachable, every pod that restarted crashed and kept crashing, so the service stayed down even after its own cluster was healthy again.
 
 Give `Config.JWKSURL` and the endpoint is configuration rather than a discovery
 result: nothing is fetched until there is a token to check, the keys are cached

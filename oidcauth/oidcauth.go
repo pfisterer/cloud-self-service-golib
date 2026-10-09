@@ -3,11 +3,10 @@
 //
 // Both services used to build their verifier with oidc.NewProvider, which
 // fetches the issuer's discovery document over the network, and they treated a
-// failure there as fatal. On 2026-09-25 the university's Keycloak went down
-// during a power cut; every pod that happened to restart in that window died on
-// the spot and stayed in CrashLoopBackOff — the self-service was unreachable
-// for hours after its own cluster was healthy again, because nothing in it
-// could start while somebody else's login service was away.
+// failure there as fatal. While the provider was unreachable, every pod that
+// restarted died on the spot and kept crashing — nothing could start while
+// somebody else's login service was away, even once its own cluster was
+// healthy again.
 //
 // So the endpoint is configuration, not a discovery result: given JWKSURL the
 // verifier is built from static values and touches the network for the first
