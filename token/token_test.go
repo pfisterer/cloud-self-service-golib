@@ -3,6 +3,7 @@ package token
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -496,5 +497,18 @@ func TestTTLPolicyResolve(t *testing.T) {
 func TestRequestedNeverIsNeverExpires(t *testing.T) {
 	if time.Duration(RequestedNever) != NeverExpires {
 		t.Errorf("RequestedNever = %d, NeverExpires = %d — they must not drift", RequestedNever, NeverExpires)
+	}
+}
+
+// Hours beyond what a time.Duration holds are too long, not wrapped into a short or negative lifetime.
+func TestResolveHugeHours(t *testing.T) {
+	p := TTLPolicy{Default: time.Hour, Max: 365 * 24 * time.Hour}
+	for _, h := range []int{2562048, 5124096, math.MaxInt} {
+		if _, err := p.Resolve(h); !errors.Is(err, ErrTTLTooLong) {
+			t.Fatalf("Resolve(%d) = %v, want ErrTTLTooLong", h, err)
+		}
+	}
+	if _, err := (TTLPolicy{Default: time.Hour}).Resolve(5124096); !errors.Is(err, ErrTTLTooLong) {
+		t.Fatalf("without Max: %v, want ErrTTLTooLong", err)
 	}
 }

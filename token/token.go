@@ -33,6 +33,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -134,6 +135,10 @@ func (p TTLPolicy) Resolve(requestedHours int) (time.Duration, error) {
 
 	case requestedHours < 0:
 		return 0, fmt.Errorf("%w: %d hours", ErrInvalidTTL, requestedHours)
+
+	case int64(requestedHours) > int64(math.MaxInt64/int64(time.Hour)):
+		// Beyond what a time.Duration holds: the multiplication below would wrap around.
+		return 0, fmt.Errorf("%w: %d hours", ErrTTLTooLong, requestedHours)
 
 	default:
 		ttl := time.Duration(requestedHours) * time.Hour
