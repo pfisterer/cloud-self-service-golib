@@ -11,8 +11,7 @@ import (
 func init() { gin.SetMode(gin.TestMode) }
 
 // TestRejectWritesForReadOnlyTokens covers the whole read-only rule: a GET is
-// always allowed, a write is refused only when the token is read-only, and a
-// request nobody flagged is treated as writable (an OIDC login is not read-only).
+// always allowed, a write is refused when the token is read-only, and a write on which nobody recorded the credential kind fails closed with 500 (the auth middleware did not run). Safe methods pass even unflagged: a CORS preflight passes auth without a credential.
 func TestRejectWritesForReadOnlyTokens(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -23,7 +22,12 @@ func TestRejectWritesForReadOnlyTokens(t *testing.T) {
 		{"GET read-only allowed", http.MethodGet, boolp(true), http.StatusOK},
 		{"POST read-only refused", http.MethodPost, boolp(true), http.StatusForbidden},
 		{"POST writable allowed", http.MethodPost, boolp(false), http.StatusOK},
-		{"POST unflagged allowed", http.MethodPost, nil, http.StatusOK},
+		{"POST unflagged fails closed", http.MethodPost, nil, http.StatusInternalServerError},
+		{"DELETE unflagged fails closed", http.MethodDelete, nil, http.StatusInternalServerError},
+		{"GET unflagged allowed", http.MethodGet, nil, http.StatusOK},
+		{"OPTIONS unflagged allowed", http.MethodOptions, nil, http.StatusOK},
+		{"HEAD read-only allowed", http.MethodHead, boolp(true), http.StatusOK},
+		{"PATCH read-only refused", http.MethodPatch, boolp(true), http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
