@@ -512,3 +512,26 @@ func TestResolveHugeHours(t *testing.T) {
 		t.Fatalf("without Max: %v, want ErrTTLTooLong", err)
 	}
 }
+
+// CreatedBy is trimmed and kept on the record; it does not change whom the token belongs to.
+func TestIssueRecordsCreatedBy(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t, time.Now())
+
+	issued, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour, CreatedBy: "  admin@example.edu\n"})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if issued.CreatedBy != "admin@example.edu" || issued.Subject != "alice@example.edu" {
+		t.Errorf("CreatedBy = %q, Subject = %q", issued.CreatedBy, issued.Subject)
+	}
+	rec, err := svc.Lookup(ctx, issued.Secret)
+	if err != nil || rec.CreatedBy != "admin@example.edu" || rec.Subject != "alice@example.edu" {
+		t.Fatalf("Lookup: %v, %+v", err, rec)
+	}
+
+	own, err := svc.Issue(ctx, "alice@example.edu", IssueOptions{TTL: time.Hour})
+	if err != nil || own.CreatedBy != "" {
+		t.Errorf("an own token: %v, CreatedBy %q", err, own.CreatedBy)
+	}
+}

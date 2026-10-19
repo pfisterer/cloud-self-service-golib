@@ -169,6 +169,8 @@ type Record struct {
 	// machine, why. A memory aid and nothing else — never a permission, never a
 	// key to anything. Being arbitrary user text, it is never logged.
 	Description string
+	// CreatedBy is who issued the token when that was not its owner: an admin acting on the owner's behalf, by the identity they signed in with. Empty when the owner created it themself — which is every token issued before the field existed. A record of who handed the credential out, never a permission: the token acts as Subject and nobody else.
+	CreatedBy string
 	// CreatedAt is when the token was issued.
 	CreatedAt time.Time
 	// ExpiresAt is when it stops being accepted. The zero time means never,
@@ -279,6 +281,8 @@ type IssueOptions struct {
 	// Description is the owner's note about the token. Trimmed, and rejected
 	// over MaxDescriptionLen. Optional.
 	Description string
+	// CreatedBy names whoever issues the token for its subject when that is somebody else — an admin acting on the subject's behalf. Trimmed; empty means the subject issued it themself. It changes nothing about what the token may do: that is the subject's, always.
+	CreatedBy string
 }
 
 // Issue creates a token for the subject and returns it, including the secret,
@@ -311,6 +315,7 @@ func (s *Service) Issue(ctx context.Context, subject string, opts IssueOptions) 
 		Prefix:      displayPrefix(secret),
 		ReadOnly:    opts.ReadOnly,
 		Description: description,
+		CreatedBy:   strings.TrimSpace(opts.CreatedBy),
 		CreatedAt:   now,
 	}
 	if opts.TTL != NeverExpires {

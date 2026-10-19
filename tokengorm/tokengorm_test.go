@@ -286,8 +286,8 @@ func TestMigrateToleratesNullInTheNewColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pre-existing token cannot be looked up: %v", err)
 	}
-	if rec.Description != "" || !rec.LastUsedAt.IsZero() {
-		t.Errorf("NULL should read as empty, got %q / %v", rec.Description, rec.LastUsedAt)
+	if rec.Description != "" || !rec.LastUsedAt.IsZero() || rec.CreatedBy != "" {
+		t.Errorf("NULL should read as empty, got %q / %v / %q", rec.Description, rec.LastUsedAt, rec.CreatedBy)
 	}
 	// The listing path reads the same columns, and it is the one a person hits.
 	list, err := store.BySubject(ctx, "alice@example.edu")
@@ -337,5 +337,41 @@ func TestMarkUsedUnknownToken(t *testing.T) {
 
 	if err := store.MarkUsed(ctx, 4711, time.Now()); !errors.Is(err, token.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// CreatedBy is written and read back; a token its owner issued has an empty one, stored as an empty string and not NULL.
+func TestCreatedBySurvivesTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	store, db := migratedStore(t)
+	svc := token.NewService("aiaas_", store)
+
+	onBehalf, err := svc.Issue(ctx, "alice@example.edu", token.IssueOptions{TTL: time.Hour, CreatedBy: " admin@example.edu "})
+	if err != nil {
+		t.Fatalf("Issue on behalf: %v", err)
+	}
+	own, err := svc.Issue(ctx, "alice@example.edu", token.IssueOptions{TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	list, err := svc.List(ctx, "alice@example.edu")
+	if err != nil || len(list) != 2 {
+		t.Fatalf("List: %v (%d)", err, len(list))
+	}
+	got := map[uint]string{}
+	for _, rec := range list {
+		got[rec.ID] = rec.CreatedBy
+	}
+	if got[onBehalf.ID] != "admin@example.edu" || got[own.ID] != "" {
+		t.Errorf("CreatedBy = %v, want admin@example.edu for the one issued on behalf and empty for the own one", got)
+	}
+	if rec, err := store.ByHash(ctx, onBehalf.Hash); err != nil || rec.CreatedBy != "admin@example.edu" {
+		t.Errorf("ByHash: %v, CreatedBy %q", err, rec.CreatedBy)
+	}
+
+	var nulls int64
+	if err := db.Table("tokens").Where("created_by IS NULL").Count(&nulls).Error; err != nil || nulls != 0 {
+		t.Errorf("rows with NULL created_by: %d (%v), want 0", nulls, err)
 	}
 }

@@ -25,7 +25,7 @@ import (
 // tokens over HTTP should map to a type it controls, so that a column rename
 // here is not a change to its published API.
 type Token struct {
-	ID        uint      `gorm:"primaryKey"`
+	ID        uint `gorm:"primaryKey"`
 	CreatedAt time.Time
 
 	// Subject is the identity the token acts as. Indexed because listing a
@@ -63,6 +63,9 @@ type Token struct {
 	// backup afterwards.
 	Description *string `gorm:"column:description"`
 	LastUsedAt  *time.Time
+
+	// CreatedBy is who issued the token on its subject's behalf, empty when the subject did. A pointer for the same reason as Description: the column is added to tables full of tokens that predate it, and those rows hold NULL.
+	CreatedBy *string `gorm:"column:created_by"`
 }
 
 // TableName pins the table so that renaming the Go type cannot silently point
@@ -85,6 +88,9 @@ func (t Token) toRecord() token.Record {
 	if t.LastUsedAt != nil {
 		rec.LastUsedAt = *t.LastUsedAt
 	}
+	if t.CreatedBy != nil {
+		rec.CreatedBy = *t.CreatedBy
+	}
 	return rec
 }
 
@@ -98,11 +104,10 @@ func fromRecord(rec token.Record) Token {
 		CreatedAt: rec.CreatedAt,
 		ExpiresAt: rec.ExpiresAt,
 	}
-	// Written as a value even when empty, so a row this package inserts never
-	// carries the NULL the pointers exist to tolerate. Only LastUsedAt stays
-	// nil, because "never used" is the truth for a token being created.
-	description := rec.Description
+	// Written as a value even when empty, so a row this package inserts never carries the NULL the pointers exist to tolerate. Only LastUsedAt stays nil, because "never used" is the truth for a token being created.
+	description, createdBy := rec.Description, rec.CreatedBy
 	row.Description = &description
+	row.CreatedBy = &createdBy
 	if !rec.LastUsedAt.IsZero() {
 		used := rec.LastUsedAt
 		row.LastUsedAt = &used
