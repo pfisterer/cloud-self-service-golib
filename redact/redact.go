@@ -8,36 +8,33 @@
 package redact
 
 import (
-	"fmt"
+	"net/url"
 	"strings"
 )
 
-// shown is how many leading characters of a secret are kept as a hint — enough
-// to tell two keys apart in a log without revealing anything brute-forceable.
-const shown = 4
-
-// Secret returns a short, non-reversible preview of a secret: the first few
-// characters plus its length, or just a marker when the value is too short to
-// reveal even that safely. Empty stays empty, so an unset option still reads as
-// unset rather than as "****".
-//
-// The length guard is also why this never panics on a short or empty string —
-// the slice below cannot go out of range.
+// Secret returns what a log line may say about a secret: "set" when it has a value, "" when it is empty, so an unset option still reads as unset. Nothing of the value itself, not even a prefix or its length: logs end up in Loki and in alert messages, readable far beyond the people who may know the secret.
 func Secret(s string) string {
 	if s == "" {
 		return ""
 	}
-	if len(s) <= shown {
-		return "****"
-	}
-	return fmt.Sprintf("%s…(len %d)", s[:shown], len(s))
+	return "set"
 }
 
-// ConnString redacts only the password=… field of a space-separated DSN
-// (the libpq / GORM key-value form, e.g. "host=db user=x password=secret …"),
-// keeping host, user and dbname visible so a broken connection is still
-// diagnosable from the log.
+// ConnString redacts the password of a DSN and keeps the rest (host, user, dbname), so a broken connection is still diagnosable from the log: the key-value form ("host=db user=x password=secret …", libpq / GORM) and the URL form ("postgres://user:secret@host/db?password=…").
 func ConnString(dsn string) string {
+	if strings.Contains(dsn, "://") {
+		if u, err := url.Parse(dsn); err == nil {
+			if _, ok := u.User.Password(); ok {
+				u.User = url.UserPassword(u.User.Username(), Secret("x"))
+			}
+			if q := u.Query(); q.Has("password") {
+				q.Set("password", Secret("x"))
+				u.RawQuery = q.Encode()
+			}
+			return u.String()
+		}
+		return "(unparsable DSN)"
+	}
 	fields := strings.Fields(dsn)
 	for i, f := range fields {
 		if k, v, ok := strings.Cut(f, "="); ok && strings.EqualFold(k, "password") {
