@@ -164,6 +164,14 @@ drifted (one showed a prefix, one truncated a whole DSN to four bytes and lost
 the host). `ConnString` redacts only the `password=` field of a key-value DSN,
 so a broken connection is still diagnosable. No dependencies.
 
+### `retry`
+
+`Do` calls a function again with a doubling pause until it succeeds, the context ends or a total time is up (by default 60 s, pauses from 250 ms up to 5 s); `Permanent` marks an error another attempt cannot fix, such as a wrong password, which then ends it at once. It exists for startup: since the NetworkPolicies a new pod is let through only a moment after it starts, so the first connection to Postgres or to an OIDC provider can fail although nothing is wrong. `OnRetry` is the hook for a log line. No dependencies.
+
+### `day`
+
+A calendar day, the unit in which projects and budgets end. `Parse` reads `2006-01-02` and RFC 3339 timestamps (with or without fractional seconds, `Z` or an offset) and takes the date written in them, without converting it to another zone: every known writer encodes a day that way (the portal's form sends `…T00:00:00.000Z`, a term limit `…T23:59:59Z`), and converting would move the latter to the next day. `Normalize` gives the stored form `2006-01-02`. `Today`, `Of`, `Start` and `End` count in Europe/Berlin (the zone database is embedded), so something that ends on a day runs while `now.Before(d.End())`. `Date` compares by day and marshals as text, so it can sit in a JSON or YAML struct directly. Before this, end dates were compared as instants or strings in several places, and the same day written twice could look like an extension.
+
 ### `ginweb`
 
 The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the reflected-origin-safe policy plus the OPTIONS preflight catch-all), `DisableCaching`, and the read-only-token rule (`SetReadOnly`, `IsReadOnly`, `RejectWritesForReadOnlyTokens`).
