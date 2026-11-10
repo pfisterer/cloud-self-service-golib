@@ -10,20 +10,32 @@ func TestParseForms(t *testing.T) {
 	for in, want := range map[string]string{
 		"2026-12-31":                     "2026-12-31",
 		" 2026-12-31 ":                   "2026-12-31",
-		"2026-12-31T00:00:00.000Z":       "2026-12-31", // the portal's form
+		"2026-12-30T23:00:00.000Z":       "2026-12-31", // the portal's picker: 31 December at local midnight, winter
+		"2026-06-29T22:00:00.000Z":       "2026-06-30", // the same in summer time
+		"2026-12-31T00:00:00.000Z":       "2026-12-31", // a stored bare day sent back by the form
 		"2026-12-31T00:00:00Z":           "2026-12-31",
-		"2026-12-31T23:59:59Z":           "2026-12-31", // the term limit: the date as written, not 00:59:59 of the next day in Berlin
+		"2026-12-31T23:59:59Z":           "2027-01-01", // 00:59:59 in Berlin (a former term end needs ParseUTCDate)
 		"2026-12-31T22:59:59Z":           "2026-12-31",
 		"2026-06-30T23:59:59+02:00":      "2026-06-30",
-		"2026-06-30T22:30:00Z":           "2026-06-30",
+		"2026-06-30T22:30:00Z":           "2026-07-01", // 00:30 in Berlin
 		"2026-06-30T21:59:59.999999999Z": "2026-06-30",
-		"2026-07-01T00:30:00-05:00":      "2026-07-01",
-		"2026-06-30T23:30:00-05:00":      "2026-06-30", // already 1 July in Berlin and in UTC: still the date written
+		"2026-07-01T00:30:00-05:00":      "2026-07-01", // 07:30 in Berlin
 	} {
 		got, err := Normalize(in)
 		if err != nil || got != want {
 			t.Errorf("Normalize(%q) = %q, %v; want %q", in, got, err, want)
 		}
+	}
+}
+
+func TestParseUTCDate(t *testing.T) {
+	for in, want := range map[string]string{"2026-12-31T23:59:59Z": "2026-12-31", "2026-12-31": "2026-12-31", "2026-06-30T23:30:00+02:00": "2026-06-30"} {
+		if d, err := ParseUTCDate(in); err != nil || d.String() != want {
+			t.Errorf("ParseUTCDate(%q) = %v, %v; want %s", in, d, err, want)
+		}
+	}
+	if _, err := ParseUTCDate("31.12.2026"); err == nil {
+		t.Error("ParseUTCDate accepted a bad day")
 	}
 }
 
@@ -38,7 +50,7 @@ func TestParseRejects(t *testing.T) {
 func TestSameDayIsEqual(t *testing.T) {
 	// The bug of 10.11.2026: the stored date-only end and the form's timestamp of the same day must be the same end.
 	a, _ := Parse("2026-12-31")
-	b, _ := Parse("2026-12-31T00:00:00.000Z")
+	b, _ := Parse("2026-12-30T23:00:00.000Z")
 	if a.Compare(b) != 0 || a.Before(b) || a.After(b) || a != b {
 		t.Fatalf("%v and %v must be the same day", a, b)
 	}

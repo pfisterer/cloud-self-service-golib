@@ -1,6 +1,6 @@
 // Package day is a calendar day in Europe/Berlin: the unit in which projects and budgets end.
 //
-// End dates had been stored as "2026-12-31", "2026-12-31T00:00:00.000Z" and "2026-12-31T23:59:59Z" and compared as instants or as strings, so the same day written twice could look like an extension (os-mgt 0.8.75). Decided on 10.11.2026: an end is a day, compared as a day, stored as "2006-01-02", and "today" and the end of a day are counted in Europe/Berlin. A timestamp in the input is accepted and read as the date written in it, not converted to Berlin: every known writer encodes a day that way (the portal's form sends "…T00:00:00.000Z", the term limit "…T23:59:59Z"), and converting would move the latter to the next day.
+// End dates had been stored as "2026-12-31", "2026-12-31T00:00:00.000Z" and "2026-12-31T23:59:59Z" and compared as instants or as strings, so the same day written twice could look like an extension (os-mgt 0.8.75). Decided on 10.11.2026: an end is a day, compared as a day in Europe/Berlin, stored as "2006-01-02"; a timestamp in the input is accepted and turned into its day in Berlin. That is what the portal means: its date picker reports a day as local midnight, so 31 December arrives as "2026-12-30T23:00:00.000Z". A writer that encoded a day as its UTC date at another time of day (os-mgt's former term end "…T23:59:59Z") has to say so itself, with ParseUTCDate.
 package day
 
 import (
@@ -43,16 +43,25 @@ func Of(t time.Time) Date {
 // Today is the current day in Berlin.
 func Today() Date { return Of(time.Now()) }
 
-// Parse reads a day: "2006-01-02", or an RFC 3339 timestamp with or without fractional seconds ("…Z" or an offset like "+02:00"), which counts as the date written in it, whatever its time and offset. Surrounding spaces are ignored; anything else is an error.
+// Parse reads a day: "2006-01-02", or an RFC 3339 timestamp with or without fractional seconds ("…Z" or an offset like "+02:00"), which counts as the day it falls on in Berlin. Surrounding spaces are ignored; anything else is an error.
 func Parse(s string) (Date, error) {
 	s = strings.TrimSpace(s)
 	if t, err := time.Parse(Layout, s); err == nil {
 		return New(t.Date()), nil
 	}
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return New(t.Date()), nil // t keeps the offset it was written with
+		return Of(t), nil
 	}
 	return Date{}, fmt.Errorf("not a day: %q (want %s or RFC 3339)", s, Layout)
+}
+
+// ParseUTCDate reads s like Parse but takes a timestamp's date in UTC instead of its day in Berlin: for values a writer stored as "this UTC date" at a time of day that falls on the next day in Berlin, such as a former term end "2026-12-31T23:59:59Z".
+func ParseUTCDate(s string) (Date, error) {
+	s = strings.TrimSpace(s)
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return New(t.UTC().Date()), nil
+	}
+	return Parse(s)
 }
 
 // Normalize is s as it is stored: Parse, then String.
