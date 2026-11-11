@@ -81,7 +81,7 @@ func Handler[C Caller](build func(C) *mcp.Server) http.Handler {
 			return
 		}
 		if _, ok := CallerFrom[C](r.Context()); !ok {
-			http.Error(w, `{"error":"unable to resolve user context"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"Anmeldung erforderlich.","code":"unauthenticated"}`, http.StatusUnauthorized)
 			return
 		}
 		inner.ServeHTTP(w, r)

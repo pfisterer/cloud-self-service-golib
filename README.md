@@ -4,8 +4,8 @@ The Go code that more than one service of the cloud self-service platform needs,
 kept in one place instead of copied.
 
 Used by [dynamic-zones](https://github.com/pfisterer/dynamic-zones),
-[openstack-management-api](https://github.com/pfisterer/openstack-management-api)
-and [role-provider-service](https://github.com/pfisterer/role-provider-service).
+[openstack-management-api](https://github.com/pfisterer/openstack-management-api),
+[role-provider-service](https://github.com/pfisterer/role-provider-service) and the AI service's management API.
 
 ## What belongs in here
 
@@ -18,15 +18,12 @@ Applied to what exists today:
 
 - `envconf` qualifies — three copies existed, and they had drifted apart.
 - `logging` qualifies — three copies of the same file under two names.
-- HTTP error mapping does *not*, although all three services have a file for it.
-  The mappings differ deliberately: one falls back to 400 with a documented
-  reason, another to 500. A shared version would have to flatten a distinction
-  somebody made on purpose.
+- HTTP error mapping: **the mechanism is shared, the tables are per service.** All three services had a file for it, and the mappings differ deliberately: one falls back to 400 with the operation's message, another to 500 or 502 with a fixed text. So `apierr` shares the shape of an answer (status, code, text), the order in which a classification is made and the rendering for REST and MCP; which errors a service tells apart and what it answers otherwise stay in that service's table.
 - `mcpserve` qualifies — the wiring around an MCP endpoint was written twice,
   and the read-only gate came out character-for-character identical both times.
   What did *not* come along is the error rendering: one service wraps the cause,
   the other deliberately shows only the message. That is the same kind of
-  distinction as the HTTP mapping above, so it stayed put.
+  distinction as the HTTP mapping above: the rendering of an `apierr.Error` is shared, what a tool's error text says around it is the service's.
 - Anything that mentions a zone, a project, a group or a quota does not qualify
   by definition.
 
@@ -138,6 +135,8 @@ afterwards, and an outage costs only the tokens whose signing key is not yet
 known. Leave it empty and discovery still happens, which is what the local and
 mock setups use.
 
+`NewWithRetry(ctx, cfg, log, retry.Policy)` is `New`, tried again while discovery fails (by default for 60 s, each failed attempt logged): without `JWKSURL` a pod that starts asks the provider at once, and since the NetworkPolicies a new pod is let through only a moment later, so the first attempt can fail although nothing is wrong. With `JWKSURL` it is one call to `New`, which makes no network call; a missing issuer is not tried again.
+
 `Verify` separates two failures that look identical from the inside: a token
 this service rejects, and a token it cannot judge because the provider is away
 (`ErrKeysUnavailable`). Callers answer 401 for the first and 503 for the second
@@ -194,7 +193,11 @@ The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the re
 
 `RejectCrossOriginWrites` refuses a state-changing request a browser sent on behalf of a page from another origin, with 403: Go's `http.CrossOriginProtection` as gin middleware, judging `Sec-Fetch-Site` and, without it, `Origin` against `Host`; a request with neither header is no browser's and passes. `CrossOriginOptions.TrustedOrigins` takes the CORS allowlist, and `EnableCORS` mounts it with that list, so a group with CORS needs no second call. It exists because a cookie with `SameSite=Lax` is sent on a cross-origin POST from any host of the same site, and CORS only stops the page from reading the answer.
 
-`LimitRequestBody(maxBytes)` caps a request body: a body announced larger by `Content-Length` is refused with 413 up front, one that turns out larger fails the handler's read (400, as for any malformed body). Not mounted by default, since an upload route needs a larger limit than the rest. `APISecurityHeaders` sets what a JSON API's responses should carry: `nosniff`, no framing, no referrer and a `Content-Security-Policy` that lets a response opened as a document load nothing; for API groups only, as the policy would break an HTML page with inline styles.
+`LimitRequestBody(maxBytes)` caps a request body: a body announced larger by `Content-Length` is refused with 413 up front (`{"error": "Die Anfrage ist zu groß.", "code": "too_large"}`), one that turns out larger fails the handler's read (400, as for any malformed body). Not mounted by default, since an upload route needs a larger limit than the rest. `APISecurityHeaders` sets what a JSON API's responses should carry: `nosniff`, no framing, no referrer and a `Content-Security-Policy` that lets a response opened as a document load nothing; for API groups only, as the policy would break an HTML page with inline styles.
+
+`Health` serves the probes: `GET /healthz` answers 200 while the process serves and checks nothing, since a liveness probe that fails over a dependency restarts a pod a restart cannot fix; `GET /readyz` runs the checks added with `AddCheck` concurrently (3 s for all of them by default) and answers 503 with the names of the failing ones under `failed`. A check added with `AddDegraded` is listed under `degraded` but never makes it 503: an identity provider that is away does not stop API tokens, and taking every pod out of the Service at once would turn a partial outage into a full one. `Mount(r)` registers both, before any authentication.
+
+`AbortError(c, *apierr.Error)` writes an `apierr` answer. The refusals this package writes itself carry a German text and a `code` too: `cross_origin`, `too_large`, `read_only`, `internal`.
 
 This is the one place the module takes gin, and the reasoning is `mcpserve`'s:
 a consumer that imports no `ginweb` still does not link gin because of it, but
@@ -266,7 +269,7 @@ twice before this package did:
   originals: they took the caller with a discarded `ok`, and a request that
   somehow reached the handler unauthenticated was served with a zero-valued
   caller — no identity, `ReadOnly()` false. The most permissive caller there is,
-  produced by the situation that should produce the least. Here it is a 401.
+  produced by the situation that should produce the least. Here it is a 401 (`{"error":"Anmeldung erforderlich.","code":"unauthenticated"}`).
   The handler is stateless: the MCP protocol from `2026-07-28` on is served only that way, and a server per request keeps no session anyway. Clients still on the session-based protocol are served too, without a session id; a GET for a notification stream gets 405, since no tool sends one. So does an OPTIONS request, before the handler looks for a caller: it is no MCP call, MCP clients are no browsers, and it must not build a server or reach the SDK.
 - **`ConfirmEcho`** — the "type the name back" step in front of a destructive
   tool. It is not a defence against prompt injection, and the doc comment says
@@ -296,6 +299,24 @@ The test helpers each service with an MCP endpoint had written for itself, and t
 - `CheckInputs(t, inputs)` holds each tool's input struct against the request type it feeds: every field of `Domain` is offered under its name, `Renamed`, or `Omitted` with a reason; stale `Renamed` or `Omitted` entries fail too. Fields are compared by JSON name; an untagged exported field counts under its name in snake_case (`GPUClass` is `gpu_class`), unexported fields do not count, and embedded structs are flattened, as `encoding/json` does.
 
 Neither check forces a tool or a field. A new route or field matches nothing and turns the test red, and what it asks for is a decision written down next to the others.
+
+### `loop`
+
+The periodic work of a service: `Run(ctx, Schedule, fn, Options)` runs `fn` after `Schedule.First` (0 = right away), then on every tick of `Interval` and whenever one of the `Nudges` receives, until the context ends; start it in a goroutine. A pass that returns an error is logged as a warning and the loop goes on. A pass that panics is recovered, logged with its stack (`Options.Log`), handed to `Options.OnPanic` (for a metric) and the loop goes on at its next tick: before this, two of openstack-management-api's loops had no recovery at all, so one bad pass ended them for the rest of the process's life without a sound. `DrainBeforeFirst` empties the nudge channels before the first pass, which covers whatever was announced before it. A nil nudge never receives, a closed one is dropped. `Pass` is one pass with the same recovery, for a pass an endpoint triggers. gin-free; it came from the AI service's `background` package and openstack-management-api's `tree.RunLoop`.
+
+### `credential`
+
+Who a request is from, by its `Authorization` header: `Resolve(ctx, header, tokens, verifier)` returns a `Principal` or one of four errors, and every service of the platform repeated exactly these steps. No bearer is `ErrMissing`; a bearer the service's token store `Owns` (its prefix) is looked up, and one that is unknown, expired or revoked is `ErrRejected` (wrapping `token.ErrNotFound`), while any other failure of the store comes back as an error of its own (the service's 500); every other bearer is verified as an OIDC ID token, where keys that cannot be fetched are `ErrKeysUnavailable` (503, not 401: a 401 sends the browser into a login that cannot work while the provider is away), any other failure `ErrRejected`, and no verifier at all `ErrNoVerifier`. A token with the service's prefix never reaches the provider. `Cause` is what a rejection was made from, for the log.
+
+`Principal` has the verified `Claims` (for an API token only `Email`, holding its subject, so `Identity()` is the same string either way), the token's `Record` for an API token (`ViaAPIToken`), and `ReadOnly`. `Tokens` and `Verifier` are the interfaces `*token.Service` and `*oidcauth.Verifier` implement; nil, or a nil pointer, means none. What a refusal looks like — status, text, the service's caller type, a dev user, acting on behalf — stays with each service. It is security-critical, so the table test covers every branch with a real RSA-signed token against a served key set.
+
+### `apierr`
+
+How a service turns the errors of its operations into the answer of its API. `Error` is the answer: `Status`, a stable `Code` a client matches on, `Msg` for people (German, like every message to people on the platform), and a cause for the log that never reaches the caller (`Cause`, `WithCause`). A `Classifier` is one service's table: `Rules` in order — `Is` (a sentinel with a fixed answer), `IsWithText` (a sentinel answered with the error's own text, for operations whose messages are written for the caller), `As` (an error type) — and a `Fallback` (nil = `Internal`, 500 "Interner Fehler."). `Classify` answers an `*Error` anywhere in the chain as it is, then the first matching rule, then the fallback; `With` puts an area's rules in front of the service's. `Body` is `{"error": …, "code": …}`, which `ginweb.AbortError` writes; `MCPError` is the same text for an MCP tool, without the cause.
+
+### `promtext`
+
+The Prometheus text exposition format (0.0.4) by hand, for a service's `/metrics`: `Writer` (`Header`, `Sample`), `CounterVec` and `HistogramVec` kept in memory, and `Cache` for a part read from a database or a cluster, rendered again once it is older than its TTL (an error is not kept). Gauges computed per scrape, a few counters and a histogram need neither client_golang's registry nor its dependencies. It came from the AI service; openstack-management-api writes its reconciler's counts and the loop panics with it. No dependencies.
 
 ## Development
 

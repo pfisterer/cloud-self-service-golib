@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
+	"github.com/pfisterer/cloud-self-service-golib/retry"
 	"go.uber.org/zap"
 )
 
@@ -178,5 +179,45 @@ func TestNew_DiscoveryStillWorks(t *testing.T) {
 func TestNew_RequiresIssuer(t *testing.T) {
 	if _, err := oidcauth.New(oidcauth.Config{ClientID: "c", JWKSURL: "http://x/certs"}, zap.NewNop().Sugar()); err == nil {
 		t.Fatal("the issuer is what a token's iss claim is checked against; it cannot be empty")
+	}
+}
+
+// Discovery that fails at first and then works: NewWithRetry waits for it, New would have given up.
+func TestNewWithRetry_WaitsForDiscovery(t *testing.T) {
+	var server *httptest.Server
+	var calls int
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer":"` + server.URL + `","jwks_uri":"` + server.URL + `/certs"}`))
+	}))
+	defer server.Close()
+	var retries int
+	v, err := oidcauth.NewWithRetry(context.Background(), oidcauth.Config{IssuerURL: server.URL, ClientID: "c"}, zap.NewNop().Sugar(), retry.Policy{Initial: time.Millisecond, Total: 5 * time.Second, OnRetry: func(int, error, time.Duration) { retries++ }})
+	if err != nil || v == nil {
+		t.Fatalf("discovery that recovers: %v", err)
+	}
+	if retries != 2 {
+		t.Fatalf("retries = %d, want 2", retries)
+	}
+}
+
+func TestNewWithRetry_GivesUpAndDoesNotRetryAMissingIssuer(t *testing.T) {
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	defer down.Close()
+	if _, err := oidcauth.NewWithRetry(context.Background(), oidcauth.Config{IssuerURL: down.URL, ClientID: "c"}, zap.NewNop().Sugar(), retry.Policy{Initial: time.Millisecond, Attempts: 3}); err == nil {
+		t.Fatal("a provider that stays away must fail in the end")
+	}
+	var retries int
+	if _, err := oidcauth.NewWithRetry(context.Background(), oidcauth.Config{ClientID: "c"}, zap.NewNop().Sugar(), retry.Policy{Initial: time.Millisecond, OnRetry: func(int, error, time.Duration) { retries++ }}); err == nil || retries != 0 {
+		t.Fatalf("a missing issuer: err %v after %d retries, want an error at once", err, retries)
+	}
+	// With a key set address nothing is fetched, so there is nothing to wait for.
+	if _, err := oidcauth.NewWithRetry(context.Background(), oidcauth.Config{IssuerURL: testIssuer, ClientID: "c", JWKSURL: "http://127.0.0.1:1/certs"}, zap.NewNop().Sugar(), retry.Policy{}); err != nil {
+		t.Fatal(err)
 	}
 }

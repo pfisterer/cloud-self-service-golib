@@ -34,6 +34,7 @@ import (
 
 	"github.com/coreos/go-oidc"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
+	"github.com/pfisterer/cloud-self-service-golib/retry"
 	"go.uber.org/zap"
 )
 
@@ -41,6 +42,8 @@ import (
 // because the provider's keys could not be fetched. Callers answer 503 for it,
 // not 401.
 var ErrKeysUnavailable = errors.New("oidc: signing keys are currently unavailable")
+
+var errNoIssuer = errors.New("oidcauth: issuer URL is required")
 
 // Config is what a deployment states about its provider.
 type Config struct {
@@ -77,7 +80,7 @@ type Verifier struct {
 // the provider is unreachable.
 func New(cfg Config, log *zap.SugaredLogger) (*Verifier, error) {
 	if cfg.IssuerURL == "" {
-		return nil, fmt.Errorf("oidcauth: issuer URL is required")
+		return nil, errNoIssuer
 	}
 	window := cfg.KeyFailureWindow
 	if window <= 0 {
@@ -122,6 +125,28 @@ func New(cfg Config, log *zap.SugaredLogger) (*Verifier, error) {
 		health:   health,
 		log:      log,
 	}, nil
+}
+
+// NewWithRetry is New, tried again by p while discovery fails: with an empty JWKSURL, New asks the provider at once, and right after a pod starts that can fail although nothing is wrong (the NetworkPolicies let a new pod through only a moment later). With JWKSURL set New makes no network call, so it is called once. A missing issuer is not tried again. p.OnRetry, when nil, logs each failed attempt at info level; the zero Policy tries for 60 s.
+func NewWithRetry(ctx context.Context, cfg Config, log *zap.SugaredLogger, p retry.Policy) (*Verifier, error) {
+	if p.OnRetry == nil {
+		p.OnRetry = func(attempt int, err error, wait time.Duration) {
+			log.Infow("OIDC provider not reachable yet, trying again", "attempt", attempt, "in", wait.String(), "error", err)
+		}
+	}
+	var v *Verifier
+	err := retry.Do(ctx, p, func(context.Context) error {
+		var err error
+		v, err = New(cfg, log)
+		if errors.Is(err, errNoIssuer) {
+			return retry.Permanent(err)
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 // Verify checks signature, issuer, audience and expiry and returns the claims.

@@ -203,14 +203,14 @@ func RejectWritesForReadOnlyTokens(log *zap.SugaredLogger) gin.HandlerFunc {
 			if log != nil {
 				log.Errorf("No credential kind recorded for %s %s — is the auth middleware mounted before RejectWritesForReadOnlyTokens?", c.Request.Method, c.Request.URL.Path)
 			}
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Interner Fehler.", "code": "internal"})
 			return
 		}
 		if readOnly {
 			if log != nil {
 				log.Warnf("Attempt to use read-only token for non-GET operation: %s %s", c.Request.Method, c.Request.URL.Path)
 			}
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "token is read-only"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Dieses API-Token darf nur lesen.", "code": "read_only"})
 			return
 		}
 		c.Next()

@@ -55,7 +55,7 @@ func RejectCrossOriginWrites(opts CrossOriginOptions) gin.HandlerFunc {
 		if opts.Log != nil {
 			opts.Log.Warnf("Refused cross-origin %s %s (Origin %q, Sec-Fetch-Site %q): %v", c.Request.Method, c.Request.URL.Path, origin, c.GetHeader("Sec-Fetch-Site"), err)
 		}
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request refused"})
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Schreibende Anfragen von einer anderen Website werden abgelehnt.", "code": "cross_origin"})
 	}
 }
 
@@ -66,13 +66,13 @@ func normalizeOrigin(origin string) string {
 
 // ── Request body limit ───────────────────────────────────────────────────────
 
-// LimitRequestBody caps the request body at maxBytes. A handler reading past it gets an error (ShouldBindJSON fails, the handler answers 400 as for any malformed body) and the connection is closed, so a client cannot keep the service busy reading an unbounded body. A body announced larger than the limit by Content-Length is refused up front with 413.
+// LimitRequestBody caps the request body at maxBytes. A handler reading past it gets an error (ShouldBindJSON fails, the handler answers 400 as for any malformed body) and the connection is closed, so a client cannot keep the service busy reading an unbounded body. A body announced larger than the limit by Content-Length is refused up front with 413 ({"error": "Die Anfrage ist zu groß.", "code": "too_large"}).
 //
 // Not mounted by default: a service that accepts uploads (CSV, LDIF) needs a larger limit on those routes than on the rest, so where to put which limit is its decision.
 func LimitRequestBody(maxBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.ContentLength > maxBytes {
-			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Die Anfrage ist zu groß.", "code": "too_large"})
 			return
 		}
 		if c.Request.Body != nil {
