@@ -96,6 +96,15 @@ func (d Date) After(e Date) bool { return d.t.After(e.t) }
 // AddDays is the day n days after d (before, for negative n).
 func (d Date) AddDays(n int) Date { return Date{d.t.AddDate(0, 0, n)} }
 
+// Sub is the number of days from e to d: d.Sub(e) == n for d == e.AddDays(n).
+func (d Date) Sub(e Date) int { return int(d.t.Sub(e.t).Round(24*time.Hour) / (24 * time.Hour)) }
+
+// AsUTC is midnight UTC of d: how a day is held where a time.Time is wanted for it, such as a SQL date column or a map key; FromUTC reads it back. It is a label for the day, not an instant of it (that is Start).
+func (d Date) AsUTC() time.Time { return d.t }
+
+// FromUTC is the day a label made by AsUTC names: the UTC date of t, whatever its zone.
+func FromUTC(t time.Time) Date { return New(t.UTC().Date()) }
+
 // Start is the first instant of d in Berlin.
 func (d Date) Start() time.Time {
 	y, m, dd := d.t.Date()

@@ -109,3 +109,17 @@ func TestToday(t *testing.T) {
 		t.Skip("crossed midnight in Berlin")
 	}
 }
+
+func TestSubAndUTCLabel(t *testing.T) {
+	a, b := New(2026, 10, 20), New(2026, 10, 30)
+	if b.Sub(a) != 10 || a.Sub(b) != -10 || a.Sub(a) != 0 {
+		t.Errorf("Sub: %d %d", b.Sub(a), a.Sub(b))
+	}
+	l := a.AsUTC()
+	if l.Location() != time.UTC || l.Hour() != 0 || l.Format(Layout) != "2026-10-20" {
+		t.Errorf("AsUTC = %v", l)
+	}
+	if FromUTC(l) != a || FromUTC(l.In(Berlin)) != a {
+		t.Error("FromUTC does not read AsUTC back")
+	}
+}

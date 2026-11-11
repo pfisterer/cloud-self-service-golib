@@ -24,7 +24,8 @@ Applied to what exists today:
   What did *not* come along is the error rendering: one service wraps the cause,
   the other deliberately shows only the message. That is the same kind of
   distinction as the HTTP mapping above: the rendering of an `apierr.Error` is shared, what a tool's error text says around it is the service's.
-- Anything that mentions a zone, a project, a group or a quota does not qualify
+- **Contracts between the services** qualify although they name a domain word, because two services must mean the same thing by them or the data between them is wrong: `calendar` (the windows of a budget, 24h, 7d, 30d, total, and the period of a usage report), which the AI service books in and the budget tree grants in, and `page` (how a list pages). The rule above still holds for them in its own way: the definition is shared, the subset a service offers is its own (`calendar.Only`: the budget tree offers no `total`).
+- Anything else that mentions a zone, a project, a group or a quota does not qualify
   by definition.
 
 Two things that look shareable and are not, so nobody has to rediscover it:
@@ -185,6 +186,21 @@ It came from the AI service, whose clients to the cluster, the registry and the 
 
 A calendar day, the unit in which projects and budgets end. `Parse` reads `2006-01-02` and RFC 3339 timestamps (with or without fractional seconds, `Z` or an offset) and takes the day they fall on in Europe/Berlin: the portal's date picker reports a day as local midnight, so 31 December arrives as `2026-12-30T23:00:00.000Z`. `ParseUTCDate` is for values a writer stored as a UTC date at a time that is already the next day in Berlin, such as os-mgt's former term end `…T23:59:59Z`. `Normalize` gives the stored form `2006-01-02`. `Today`, `Of`, `Start` and `End` count in Europe/Berlin (the zone database is embedded), so something that ends on a day runs while `now.Before(d.End())`. `Date` compares by day and marshals as text, so it can sit in a JSON or YAML struct directly. Before this, end dates were compared as instants or strings in several places, and the same day written twice could look like an extension.
 
+`d.Sub(e)` is the number of days from `e` to `d`. `AsUTC` is midnight UTC of a day, the form in which a day is held where a `time.Time` is wanted for it (a SQL `date` column, a map key), and `FromUTC` reads it back: a label for the day, not an instant of it (that is `Start`).
+
+### `page`
+
+How every list pages, modelled on openstack-management-api's node lists, which the self-service UI already pages through. `Parse(limit, offset)` and `FromQuery(url.Values)` read the bounds: empty is the default (`DefaultLimit` 100, offset 0), a limit above `MaxLimit` (500) is cut to it, a value that is no number, a limit of 0 or less and a negative offset are a 400 (`*apierr.Error`, code `invalid`) with a German text. `Page[T]` is the answer, `{"items": [...], "total": n, "limit": l, "offset": o}`, items never null; `More()` says whether entries follow. `New(items, total, r)` is a page a store already cut, `Of(all, r)` cuts a list held in memory. `Input` is the paging of an MCP tool, to embed in its input struct: smaller pages (`MCPDefaultLimit` 50, `MCPMaxLimit` 200), since a page lands in a model's context, and bounds out of range are corrected rather than refused. Gin-free; `ginweb.PageRequest` is the gin helper.
+
+A service that documents its API with swag cannot name `page.Page[T]` in an annotation (swag reads no generic type from another module without parsing every dependency); the AI service documents the answer as a local `Page{items=[]T}` and holds it equal to `page.Page` in a test.
+
+### `calendar`
+
+How usage is counted over days, the contract between the AI service, which books usage per day and enforces budgets, and the budget tree in openstack-management-api, which grants amounts per window. Both count in calendar days in Europe/Berlin (decided 11.11.2026; the AI service had booked UTC days, so "24h" reset at 01:00 or 02:00 local time).
+
+- **Windows:** `Windows()` are 24h, 7d, 30d and total with their length in days (0 for total) and a German label; `Lookup(name)`, `Names()`. `Window.Start(now)` is the first day a window counts: today in Berlin and the days before it, so what is used today counts at once; total has none, the caller knows where its term starts. `Only(names...)` is a service's subset and panics at startup on a name that is no window, so a window cannot exist on one side only: the budget tree offers `Only(Window24h, Window7d, Window30d)`.
+- **Periods:** `Rule.Parse(from, to, now)` reads a report's period (YYYY-MM-DD, both days included). The rule is one for every report: without `to` it is the last day of the default (yesterday, or today with `IncludeToday` for live numbers such as hourly GPU use); without `from` the period is `Days` long (default 30) and ends at `to`, whether `to` was given or not; longer than `MaxDays` or ending before it starts is a 400 (`*apierr.Error`, code `invalid`) with a German text. `Report(maxDays)` is the usual rule: the last 30 finished days. Before, the two services differed when only `to` was given (one kept the default `from` and refused a `to` before it, the other took the 30 days up to `to`) and in how they counted the longest span. `Period.Start()` and `End()` are its first instant and the first after it in Berlin, `Days()` its length. `ginweb.Period(c, rule, now)` is the gin helper.
+
 ### `ginweb`
 
 The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the reflected-origin-safe policy plus the OPTIONS preflight catch-all), `DisableCaching`, and the read-only-token rule (`SetReadOnly`, `IsReadOnly`, `RejectWritesForReadOnlyTokens`).
@@ -196,6 +212,8 @@ The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the re
 `LimitRequestBody(maxBytes)` caps a request body: a body announced larger by `Content-Length` is refused with 413 up front (`{"error": "Die Anfrage ist zu groß.", "code": "too_large"}`), one that turns out larger fails the handler's read (400, as for any malformed body). Not mounted by default, since an upload route needs a larger limit than the rest. `APISecurityHeaders` sets what a JSON API's responses should carry: `nosniff`, no framing, no referrer and a `Content-Security-Policy` that lets a response opened as a document load nothing; for API groups only, as the policy would break an HTML page with inline styles.
 
 `Health` serves the probes: `GET /healthz` answers 200 while the process serves and checks nothing, since a liveness probe that fails over a dependency restarts a pod a restart cannot fix; `GET /readyz` runs the checks added with `AddCheck` concurrently (3 s for all of them by default) and answers 503 with the names of the failing ones under `failed`. A check added with `AddDegraded` is listed under `degraded` but never makes it 503: an identity provider that is away does not stop API tokens, and taking every pod out of the Service at once would turn a partial outage into a full one. `Mount(r)` registers both, before any authentication.
+
+`PageRequest(c)` and `Period(c, rule, now)` read `?limit`/`?offset` and `?from`/`?to` (packages `page` and `calendar`) and answer a refusal with its 400.
 
 `AbortError(c, *apierr.Error)` writes an `apierr` answer. The refusals this package writes itself carry a German text and a `code` too: `cross_origin`, `too_large`, `read_only`, `internal`.
 
