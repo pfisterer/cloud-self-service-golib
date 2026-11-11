@@ -11,7 +11,10 @@
 // so such a token authenticates cleanly and is a member of nothing.
 package authn
 
-import "strings"
+import (
+	"crypto/subtle"
+	"strings"
+)
 
 // Claims is the part of an OIDC ID token the platform acts on. The json tags
 // are the standard claim names, so this can be unmarshalled straight out of a
@@ -79,4 +82,18 @@ func CutBearerPrefix(header string) (string, bool) {
 func Scheme(header string) string {
 	scheme, _, _ := strings.Cut(strings.TrimSpace(header), " ")
 	return scheme
+}
+
+// SecretEqual reports whether got is the configured secret want, comparing in constant time so the answer's timing tells nothing about how much of a guess was right. An empty want never matches: a static token that was not configured locks the door rather than opening it to every request without one.
+func SecretEqual(got, want string) bool {
+	if want == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// BearerIs reports whether an Authorization header carries the static bearer token want: CutBearerPrefix, then SecretEqual. For the machine-to-machine routes that check one configured token; what to answer when it does not match stays with the caller.
+func BearerIs(header, want string) bool {
+	got, ok := CutBearerPrefix(header)
+	return ok && SecretEqual(got, want)
 }

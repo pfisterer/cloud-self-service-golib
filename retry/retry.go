@@ -6,18 +6,23 @@ package retry
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"time"
 )
 
 // Policy is how long and how often to try. The zero value tries for 60 s with pauses from 250 ms doubling up to 5 s.
 type Policy struct {
-	// Total is how long to keep trying, counted from the first attempt; 0 = 60 s.
+	// Total is how long to keep trying, counted from the first attempt; 0 = 60 s. A negative Total sets no time limit: only ctx, Attempts or a Permanent error end it, which is what a loop that must keep trying for as long as the process runs wants.
 	Total time.Duration
+	// Attempts is the most calls of fn there will be, the first included; 0 = no limit beyond Total. A step that must run a fixed number of times, however fast each call fails, says so here rather than deriving it from Total and the pauses.
+	Attempts int
+	// Jitter spreads each pause by up to ± this fraction of it (0.1 = ±10 %), so several pods that failed together do not retry in lockstep; 0 = none, values outside 0..1 are clamped. The doubling works on the pause without jitter.
+	Jitter float64
 	// Initial is the first pause; 0 = 250 ms. Each pause doubles up to Max.
 	Initial time.Duration
 	// Max is the longest pause; 0 = 5 s.
 	Max time.Duration
-	// OnRetry, if set, is called after a failed attempt that will be tried again, with the attempt's number (from 1), its error and the pause before the next one; for a log line.
+	// OnRetry, if set, is called after a failed attempt that will be tried again, with the attempt's number (from 1), its error and the pause before the next one (with jitter applied, as it will be waited); for a log line.
 	OnRetry func(attempt int, err error, wait time.Duration)
 }
 
@@ -35,19 +40,23 @@ func Permanent(err error) error {
 	return permanent{err}
 }
 
-// Do calls fn until it returns nil, returns an error wrapped by Permanent, ctx ends, or the next pause would end after Total. It returns nil on success, else the last error of fn (or ctx's error, if ctx ended before fn ever ran).
+// Do calls fn until it returns nil, returns an error wrapped by Permanent, ctx ends, Attempts calls have been made, or the next pause would end after Total. It returns nil on success, else the last error of fn (or ctx's error, if ctx ended before fn ever ran).
 func Do(ctx context.Context, p Policy, fn func(ctx context.Context) error) error {
-	total, wait, max := p.Total, p.Initial, p.Max
-	if total <= 0 {
+	total, wait, maxWait := p.Total, p.Initial, p.Max
+	if total == 0 {
 		total = 60 * time.Second
 	}
 	if wait <= 0 {
 		wait = 250 * time.Millisecond
 	}
-	if max <= 0 {
-		max = 5 * time.Second
+	if maxWait <= 0 {
+		maxWait = 5 * time.Second
 	}
-	deadline := time.Now().Add(total)
+	var deadline time.Time
+	if p.Total >= 0 {
+		deadline = time.Now().Add(total)
+	}
+	jitter := min(max(p.Jitter, 0), 1)
 	var last error
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -63,19 +72,26 @@ func Do(ctx context.Context, p Policy, fn func(ctx context.Context) error) error
 		if perm, ok := errors.AsType[permanent](last); ok {
 			return perm.err
 		}
-		if time.Now().Add(wait).After(deadline) {
+		if p.Attempts > 0 && attempt >= p.Attempts {
+			return last
+		}
+		pause := wait
+		if jitter > 0 {
+			pause += time.Duration((rand.Float64()*2 - 1) * jitter * float64(wait))
+		}
+		if !deadline.IsZero() && time.Now().Add(pause).After(deadline) {
 			return last
 		}
 		if p.OnRetry != nil {
-			p.OnRetry(attempt, last, wait)
+			p.OnRetry(attempt, last, pause)
 		}
-		t := time.NewTimer(wait)
+		t := time.NewTimer(pause)
 		select {
 		case <-ctx.Done():
 			t.Stop()
 			return last
 		case <-t.C:
 		}
-		wait = min(wait*2, max)
+		wait = min(wait*2, maxWait)
 	}
 }

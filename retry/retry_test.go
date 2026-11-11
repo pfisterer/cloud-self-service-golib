@@ -82,3 +82,69 @@ func TestZeroPolicyDefaults(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }
+
+// Attempts counts calls, the first included, however fast they fail and however much of Total is left.
+func TestAttemptsLimitsCalls(t *testing.T) {
+	want := errors.New("503")
+	calls, retries := 0, 0
+	p := Policy{Total: time.Minute, Initial: time.Millisecond, Max: time.Millisecond, Attempts: 4, OnRetry: func(int, error, time.Duration) { retries++ }}
+	err := Do(context.Background(), p, func(context.Context) error { calls++; return want })
+	if !errors.Is(err, want) || calls != 4 || retries != 3 {
+		t.Fatalf("err=%v calls=%d retries=%d, want %v after 4 calls and 3 retries", err, calls, retries, want)
+	}
+	calls = 0
+	if err := Do(context.Background(), Policy{Attempts: 4, Initial: time.Millisecond}, func(context.Context) error {
+		calls++
+		if calls < 4 {
+			return want
+		}
+		return nil
+	}); err != nil || calls != 4 {
+		t.Fatalf("success on the last attempt: err=%v calls=%d", err, calls)
+	}
+}
+
+// Jitter spreads each pause within ± the fraction of it, and the pause handed to OnRetry is the one waited.
+func TestJitterSpreadsPauses(t *testing.T) {
+	const base = 2 * time.Millisecond
+	seen := map[time.Duration]bool{}
+	p := Policy{Initial: base, Max: base, Attempts: 40, Jitter: 0.5, OnRetry: func(_ int, _ error, wait time.Duration) {
+		if wait < base/2 || wait > base*3/2 {
+			t.Errorf("pause %v outside %v ± 50%%", wait, base)
+		}
+		seen[wait] = true
+	}}
+	_ = Do(context.Background(), p, func(context.Context) error { return errors.New("down") })
+	if len(seen) < 2 {
+		t.Fatalf("40 pauses with jitter were all %v", seen)
+	}
+	// Without Jitter every pause is the configured one.
+	p.Jitter, p.Attempts = 0, 5
+	p.OnRetry = func(_ int, _ error, wait time.Duration) {
+		if wait != base {
+			t.Errorf("pause %v without jitter, want %v", wait, base)
+		}
+	}
+	_ = Do(context.Background(), p, func(context.Context) error { return errors.New("down") })
+}
+
+// A negative Total sets no time limit: a pause longer than the default 60 s is still waited, and only ctx ends it.
+func TestNegativeTotalHasNoTimeLimit(t *testing.T) {
+	want := errors.New("down")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	retried := false
+	err := Do(ctx, Policy{Total: -1, Initial: 2 * time.Minute, Max: 2 * time.Minute, OnRetry: func(int, error, time.Duration) {
+		retried = true
+		cancel()
+	}}, func(context.Context) error { return want })
+	if !errors.Is(err, want) || !retried {
+		t.Fatalf("err=%v retried=%v: a 2 min pause must be waited when Total < 0", err, retried)
+	}
+	// With a time limit the same pause is not started at all.
+	retried = false
+	err = Do(context.Background(), Policy{Total: time.Second, Initial: 2 * time.Minute, OnRetry: func(int, error, time.Duration) { retried = true }}, func(context.Context) error { return want })
+	if !errors.Is(err, want) || retried {
+		t.Fatalf("err=%v retried=%v: a pause beyond Total must end it", err, retried)
+	}
+}

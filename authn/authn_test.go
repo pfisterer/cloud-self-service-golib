@@ -160,3 +160,42 @@ func TestSchemeNeverReturnsTheCredentialOfAWellFormedHeader(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretEqual(t *testing.T) {
+	for _, c := range []struct {
+		got, want string
+		ok        bool
+	}{
+		{"s3cret", "s3cret", true},
+		{"s3cret", "s3cre", false},
+		{"S3CRET", "s3cret", false},
+		{"", "s3cret", false},
+		{"", "", false}, // unconfigured is closed, also for a request that brings nothing
+		{"anything", "", false},
+	} {
+		if got := SecretEqual(c.got, c.want); got != c.ok {
+			t.Errorf("SecretEqual(%q, %q) = %v, want %v", c.got, c.want, got, c.ok)
+		}
+	}
+}
+
+func TestBearerIs(t *testing.T) {
+	for _, c := range []struct {
+		header, want string
+		ok           bool
+	}{
+		{"Bearer s3cret", "s3cret", true},
+		{"bearer s3cret", "s3cret", true},
+		{"Bearer  s3cret ", "s3cret", true},
+		{"Bearer other", "s3cret", false},
+		{"Basic s3cret", "s3cret", false},
+		{"s3cret", "s3cret", false},
+		{"", "s3cret", false},
+		{"Bearer ", "", false},
+		{"Bearer x", "", false},
+	} {
+		if got := BearerIs(c.header, c.want); got != c.ok {
+			t.Errorf("BearerIs(%q, %q) = %v, want %v", c.header, c.want, got, c.ok)
+		}
+	}
+}

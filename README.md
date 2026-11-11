@@ -124,6 +124,8 @@ addresses are released at all, and where they are not, an opaque id or a
 matriculation number is all there is. When that changes, this one function
 changes — not a column in three databases.
 
+`SecretEqual` and `BearerIs` are for the machine-to-machine routes that check one configured static token: `SecretEqual(got, want)` compares in constant time, and an empty `want` never matches, so a token that was not configured locks the route instead of opening it; `BearerIs(header, want)` is `CutBearerPrefix` followed by `SecretEqual`. What a refusal looks like stays with each router.
+
 Today `Identity` is the e-mail address, falling back to `preferred_username` and then `sub` for a provider that releases no address. An address is lowercased, because providers release it in whatever case the directory holds and two spellings of one address are one person; opaque fallbacks keep their case.
 
 ### `oidcauth`
@@ -164,9 +166,13 @@ drifted (one showed a prefix, one truncated a whole DSN to four bytes and lost
 the host). `ConnString` redacts only the `password=` field of a key-value DSN,
 so a broken connection is still diagnosable. No dependencies.
 
+`ConnString` reads the key-value form the way libpq does: the key in any case, blanks allowed around `=`, and a quoted value (`password='pa ss word'`, with `\'` inside) masked as a whole rather than word by word. In the URL form the password in the user info and a `password` query parameter in any case (`?Password=…`) are masked. A URL that does not parse comes out as `(unparsable DSN)`. An empty password reads as empty, as `Secret` has it.
+
 ### `retry`
 
 `Do` calls a function again with a doubling pause until it succeeds, the context ends or a total time is up (by default 60 s, pauses from 250 ms up to 5 s); `Permanent` marks an error another attempt cannot fix, such as a wrong password, which then ends it at once. It exists for startup: since the NetworkPolicies a new pod is let through only a moment after it starts, so the first connection to Postgres or to an OIDC provider can fail although nothing is wrong. `OnRetry` is the hook for a log line. No dependencies.
+
+Three fields for loops that are not about startup: `Attempts` caps the number of calls, the first included (0 = no limit), for a step that must run a fixed number of times however fast each call fails; `Jitter` spreads each pause by ± that fraction (0.1 = ±10 %) so pods that failed together do not retry in lockstep, and `OnRetry` is handed the pause as it will be waited; a negative `Total` sets no time limit, so only the context, `Attempts` or a `Permanent` error end it — a supervisor that reconnects for as long as the process runs.
 
 ### `day`
 
@@ -177,6 +183,10 @@ A calendar day, the unit in which projects and budgets end. `Parse` reads `2006-
 The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the reflected-origin-safe policy plus the OPTIONS preflight catch-all), `DisableCaching`, and the read-only-token rule (`SetReadOnly`, `IsReadOnly`, `RejectWritesForReadOnlyTokens`).
 
 `EnableCORS` takes a `CORSOptions`: exact origins in `AllowedOrigins` (empty means no cross-origin access at all, which is right when the UI reaches the API same-origin), `DevMode` to additionally allow loopback origins for a local dev server, and `AllowMethods`/`AllowHeaders` that fall back to a common default when nil. It never reflects the request origin; an unlisted origin is refused. `RejectWritesForReadOnlyTokens` refuses anything but GET for a read-only token with a 403, which is why it belongs on the REST route group and not in the auth middleware — an MCP call is always a POST, reads included.
+
+`RejectCrossOriginWrites` refuses a state-changing request a browser sent on behalf of a page from another origin, with 403: Go's `http.CrossOriginProtection` as gin middleware, judging `Sec-Fetch-Site` and, without it, `Origin` against `Host`; a request with neither header is no browser's and passes. `CrossOriginOptions.TrustedOrigins` takes the CORS allowlist, and `EnableCORS` mounts it with that list, so a group with CORS needs no second call. It exists because a cookie with `SameSite=Lax` is sent on a cross-origin POST from any host of the same site, and CORS only stops the page from reading the answer.
+
+`LimitRequestBody(maxBytes)` caps a request body: a body announced larger by `Content-Length` is refused with 413 up front, one that turns out larger fails the handler's read (400, as for any malformed body). Not mounted by default, since an upload route needs a larger limit than the rest. `APISecurityHeaders` sets what a JSON API's responses should carry: `nosniff`, no framing, no referrer and a `Content-Security-Policy` that lets a response opened as a document load nothing; for API groups only, as the policy would break an HTML page with inline styles.
 
 This is the one place the module takes gin, and the reasoning is `mcpserve`'s:
 a consumer that imports no `ginweb` still does not link gin because of it, but
@@ -249,7 +259,7 @@ twice before this package did:
   somehow reached the handler unauthenticated was served with a zero-valued
   caller — no identity, `ReadOnly()` false. The most permissive caller there is,
   produced by the situation that should produce the least. Here it is a 401.
-  The handler is stateless: the MCP protocol from `2026-07-28` on is served only that way, and a server per request keeps no session anyway. Clients still on the session-based protocol are served too, without a session id; a GET for a notification stream gets 405, since no tool sends one.
+  The handler is stateless: the MCP protocol from `2026-07-28` on is served only that way, and a server per request keeps no session anyway. Clients still on the session-based protocol are served too, without a session id; a GET for a notification stream gets 405, since no tool sends one. So does an OPTIONS request, before the handler looks for a caller: it is no MCP call, MCP clients are no browsers, and it must not build a server or reach the SDK.
 - **`ConfirmEcho`** — the "type the name back" step in front of a destructive
   tool. It is not a defence against prompt injection, and the doc comment says
   so: injected text can quote a name as easily as invent one. It catches a model
@@ -267,6 +277,17 @@ CORS, caching, the read-only rule — lives in `ginweb` instead, on the same ter
 this package set: only a consumer that imports it links gin. The MCP SDK itself
 does become a dependency of the module — a consumer that imports no `mcpserve`
 still does not link it, but it does appear in `go.sum`.
+
+### `mcpserve/mcptest`
+
+The test helpers each service with an MCP endpoint had written for itself, and the two drift checks that keep the tools in step with the REST API. It depends on the MCP SDK and `testing` only, no gin: routes are passed as `"METHOD /path"` strings, whatever router produced them.
+
+- `InMemory(t, server)` connects a client over an in-memory transport; `Dial(t, endpoint, bearer)` connects over streamable HTTP with `Authorization: Bearer <bearer>` on every request (none for an empty bearer), so a test goes through the service's real authentication. Both close the session when the test ends.
+- `ToolNames` lists the offered tools, sorted; `Call` calls one and fails the test only when the call itself fails, so a tool's error comes back as a result with `IsError`; `Text` joins a result's text content.
+- `CheckRoutes(t, routes, tools, decisions)` holds every route against a `Route` decision: the `Tools` that do what it does, or the reason it is `Omitted` — exactly one of the two. It fails on a route with no decision, a decision for a route that does not exist, a named tool that is not offered, and a tool no route stands behind.
+- `CheckInputs(t, inputs)` holds each tool's input struct against the request type it feeds: every field of `Domain` is offered under its name, `Renamed`, or `Omitted` with a reason; stale `Renamed` or `Omitted` entries fail too. Fields are compared by JSON name; an untagged exported field counts under its name in snake_case (`GPUClass` is `gpu_class`), unexported fields do not count, and embedded structs are flattened, as `encoding/json` does.
+
+Neither check forces a tool or a field. A new route or field matches nothing and turns the test red, and what it asks for is a decision written down next to the others.
 
 ## Development
 

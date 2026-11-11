@@ -61,6 +61,8 @@ func CallerFrom[C Caller](ctx context.Context) (C, bool) {
 // hands the tools a zero-valued caller: no identity, and ReadOnly() false. That
 // is the most permissive caller there is, produced by the one situation that
 // should produce the least: authentication did not run.
+//
+// OPTIONS is answered 405 with "Allow: POST", as the SDK answers a GET for a notification stream.
 func Handler[C Caller](build func(C) *mcp.Server) http.Handler {
 	// Stateless: the protocol from 2026-07-28 on is served only in this mode,
 	// and it is the one that fits — a server per request already keeps no
@@ -72,6 +74,12 @@ func Handler[C Caller](build func(C) *mcp.Server) http.Handler {
 	}, &mcp.StreamableHTTPOptions{Stateless: true})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An OPTIONS request is no MCP call (MCP clients are no browsers, and a CORS preflight is the router's business), so it gets the SDK's answer to a stream GET: 405, POST allowed. Answered here, it builds no server and never reaches the SDK's version checks.
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		if _, ok := CallerFrom[C](r.Context()); !ok {
 			http.Error(w, `{"error":"unable to resolve user context"}`, http.StatusUnauthorized)
 			return

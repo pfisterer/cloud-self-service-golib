@@ -200,6 +200,28 @@ func TestHandler_RefusesARequestWithNoCaller(t *testing.T) {
 	}
 }
 
+// OPTIONS is no MCP call: 405 with POST allowed, as for a stream GET, whether or not the request carries a caller.
+func TestHandler_RefusesOptionsAndStreamGET(t *testing.T) {
+	for _, caller := range []*testCaller{{name: "alice"}, nil} {
+		srv := serve(t, caller)
+		for _, method := range []string{http.MethodOptions, http.MethodGet} {
+			if method == http.MethodGet && caller == nil {
+				continue // no caller: 401 comes first for everything that is not OPTIONS
+			}
+			req, _ := http.NewRequest(method, srv.URL, nil)
+			req.Header.Set("Accept", "text/event-stream")
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+			_ = res.Body.Close()
+			if res.StatusCode != http.StatusMethodNotAllowed || res.Header.Get("Allow") != "POST" {
+				t.Errorf("%s (caller %v): got %d Allow %q, want 405 Allow POST", method, caller != nil, res.StatusCode, res.Header.Get("Allow"))
+			}
+		}
+	}
+}
+
 // A caller type is addressed by its own type, so one kind of caller cannot be
 // read out of the context as another.
 func TestCallerFrom_IsTypedPerCallerType(t *testing.T) {
