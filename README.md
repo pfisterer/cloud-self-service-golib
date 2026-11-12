@@ -24,6 +24,7 @@ Applied to what exists today:
   What did *not* come along is the error rendering: one service wraps the cause,
   the other deliberately shows only the message. That is the same kind of
   distinction as the HTTP mapping above: the rendering of an `apierr.Error` is shared, what a tool's error text says around it is the service's.
+- **Texts for people in German and English** (`msg`): every service answers in the language the caller asks for by `Accept-Language`, German by default, and the parsing of that header, the pair type and how an error carries it must be the same everywhere, or one service answers a person in English and the next in German.
 - **Contracts between the services** qualify although they name a domain word, because two services must mean the same thing by them or the data between them is wrong: `calendar` (the windows of a budget, 24h, 7d, 30d, total, and the period of a usage report), which the AI service books in and the budget tree grants in, and `page` (how a list pages). The rule above still holds for them in its own way: the definition is shared, the subset a service offers is its own (`calendar.Only`: the budget tree offers no `total`).
 - Anything else that mentions a zone, a project, a group or a quota does not qualify
   by definition.
@@ -84,6 +85,29 @@ Tags are immutable once the Go module proxy has seen them. A tag that turns out
 wrong is not moved, it is superseded by the next one.
 
 ## Packages
+
+### `msg`
+
+Texts for people in German and English, chosen per request. Dependency-free (standard library only).
+
+- **Pairs, not keys.** `msg.T(de, en)` is a `Text`; `msg.F(de, en, args...)` formats both like `fmt.Sprintf` with the same args, writing an arg that is a `Text` (or an error carrying one) in each side's language. `Raw(s)` is the same in both (names, ids, another system's message). `In(lang)` renders, falling back to German where English is empty; `String()` is German, so `%s` prints German; `Complete()` says both are there. A constructor that takes both languages cannot be called with one, which is the check that nothing reaches people in German only.
+- **Errors.** `msg.Errorf(de, en, args...)` is `fmt.Errorf` for both languages (`%w` wraps as there, `errors.Is`/`errors.As` see through it); `msg.Wrap(kind, text)` is an error that is `kind` for `errors.Is` with `text` as its message (a sentinel decides the status, the text is what people read); `msg.Err(text)`. They implement `Localized` (`Text() Text`), as does `apierr.Error`. `TextOf(err)` is an error's text in both languages when it carries one and a wrapper adds nothing to it, else its `Error()` in both. `Localize(err, lang)` is err with its text in lang for an answer that can only be a string, still wrapping err.
+- **The language.** `Lang` is `msg.DE` or `msg.EN`, `msg.Default` is German. `FromAcceptLanguage(header)` takes the tag of ours with the highest q (`de-DE`, `en-US`, `en_GB` count by their prefix, `q=0` refuses, the first of equals wins), German when the header is empty or names neither. `WithLang`/`LangFrom`/`LangOf(ctx)` carry it through a context; `FromRequest(r)` is the context's, else the header's. `ginweb.Language()` stores it for every request, `mcpserve.Handler` for every MCP call.
+- **Not translated:** logs (an error's `Error()` stays German), stored texts (a history note written once is read in the language it was written in), and the stable `code` of an answer, which is what a client matches on.
+
+```go
+var errTaken = msg.Wrap(common.ErrConflict, msg.T("Der Name ist schon vergeben.", "The name is already taken."))
+
+func check(n int, limit int) error {
+    if n > limit {
+        return msg.Errorf("Höchstens %d erlaubt, nicht %d.", "At most %d allowed, not %d.", limit, n)
+    }
+    return nil
+}
+
+r.Use(ginweb.Language())                   // on the engine, before the routes
+ginweb.AbortError(c, classifier.Classify(err)) // {"error": "<text in the caller's language>", "code": "…"}
+```
 
 ### `envconf`
 
@@ -190,7 +214,7 @@ A calendar day, the unit in which projects and budgets end. `Parse` reads `2006-
 
 ### `page`
 
-How every list pages, modelled on openstack-management-api's node lists, which the self-service UI already pages through. `Parse(limit, offset)` and `FromQuery(url.Values)` read the bounds: empty is the default (`DefaultLimit` 100, offset 0), a limit above `MaxLimit` (500) is cut to it, a value that is no number, a limit of 0 or less and a negative offset are a 400 (`*apierr.Error`, code `invalid`) with a German text. `Page[T]` is the answer, `{"items": [...], "total": n, "limit": l, "offset": o}`, items never null; `More()` says whether entries follow. `New(items, total, r)` is a page a store already cut, `Of(all, r)` cuts a list held in memory. `Input` is the paging of an MCP tool, to embed in its input struct: smaller pages (`MCPDefaultLimit` 50, `MCPMaxLimit` 200), since a page lands in a model's context, and bounds out of range are corrected rather than refused. Gin-free; `ginweb.PageRequest` is the gin helper.
+How every list pages, modelled on openstack-management-api's node lists, which the self-service UI already pages through. `Parse(limit, offset)` and `FromQuery(url.Values)` read the bounds: empty is the default (`DefaultLimit` 100, offset 0), a limit above `MaxLimit` (500) is cut to it, a value that is no number, a limit of 0 or less and a negative offset are a 400 (`*apierr.Error`, code `invalid`) with a text in German and English. `Page[T]` is the answer, `{"items": [...], "total": n, "limit": l, "offset": o}`, items never null; `More()` says whether entries follow. `New(items, total, r)` is a page a store already cut, `Of(all, r)` cuts a list held in memory. `Input` is the paging of an MCP tool, to embed in its input struct: smaller pages (`MCPDefaultLimit` 50, `MCPMaxLimit` 200), since a page lands in a model's context, and bounds out of range are corrected rather than refused. Gin-free; `ginweb.PageRequest` is the gin helper.
 
 A service that documents its API with swag cannot name `page.Page[T]` in an annotation (swag reads no generic type from another module without parsing every dependency); the AI service documents the answer as a local `Page{items=[]T}` and holds it equal to `page.Page` in a test.
 
@@ -198,8 +222,8 @@ A service that documents its API with swag cannot name `page.Page[T]` in an anno
 
 How usage is counted over days, the contract between the AI service, which books usage per day and enforces budgets, and the budget tree in openstack-management-api, which grants amounts per window. Both count in calendar days in Europe/Berlin (decided 11.11.2026; the AI service had booked UTC days, so "24h" reset at 01:00 or 02:00 local time).
 
-- **Windows:** `Windows()` are 24h, 7d, 30d and total with their length in days (0 for total) and a German label; `Lookup(name)`, `Names()`. `Window.Start(now)` is the first day a window counts: today in Berlin and the days before it, so what is used today counts at once; total has none, the caller knows where its term starts. `Only(names...)` is a service's subset and panics at startup on a name that is no window, so a window cannot exist on one side only: the budget tree offers `Only(Window24h, Window7d, Window30d)`.
-- **Periods:** `Rule.Parse(from, to, now)` reads a report's period (YYYY-MM-DD, both days included). The rule is one for every report: without `to` it is the last day of the default (yesterday, or today with `IncludeToday` for live numbers such as hourly GPU use); without `from` the period is `Days` long (default 30) and ends at `to`, whether `to` was given or not; longer than `MaxDays` or ending before it starts is a 400 (`*apierr.Error`, code `invalid`) with a German text. `Report(maxDays)` is the usual rule: the last 30 finished days. Before, the two services differed when only `to` was given (one kept the default `from` and refused a `to` before it, the other took the 30 days up to `to`) and in how they counted the longest span. `Period.Start()` and `End()` are its first instant and the first after it in Berlin, `Days()` its length. `ginweb.Period(c, rule, now)` is the gin helper.
+- **Windows:** `Windows()` are 24h, 7d, 30d and total with their length in days (0 for total) and a label for people (`msg.Text`: heute / today, in 7 Tagen / in 7 days, insgesamt / in total); `Lookup(name)`, `Names()`. `Window.Start(now)` is the first day a window counts: today in Berlin and the days before it, so what is used today counts at once; total has none, the caller knows where its term starts. `Only(names...)` is a service's subset and panics at startup on a name that is no window, so a window cannot exist on one side only: the budget tree offers `Only(Window24h, Window7d, Window30d)`.
+- **Periods:** `Rule.Parse(from, to, now)` reads a report's period (YYYY-MM-DD, both days included). The rule is one for every report: without `to` it is the last day of the default (yesterday, or today with `IncludeToday` for live numbers such as hourly GPU use); without `from` the period is `Days` long (default 30) and ends at `to`, whether `to` was given or not; longer than `MaxDays` or ending before it starts is a 400 (`*apierr.Error`, code `invalid`) with a text in German and English. `Report(maxDays)` is the usual rule: the last 30 finished days. Before, the two services differed when only `to` was given (one kept the default `from` and refused a `to` before it, the other took the 30 days up to `to`) and in how they counted the longest span. `Period.Start()` and `End()` are its first instant and the first after it in Berlin, `Days()` its length. `ginweb.Period(c, rule, now)` is the gin helper.
 
 ### `ginweb`
 
@@ -209,13 +233,13 @@ The HTTP wiring every gin-based service wrote the same way: `EnableCORS` (the re
 
 `RejectCrossOriginWrites` refuses a state-changing request a browser sent on behalf of a page from another origin, with 403: Go's `http.CrossOriginProtection` as gin middleware, judging `Sec-Fetch-Site` and, without it, `Origin` against `Host`; a request with neither header is no browser's and passes. `CrossOriginOptions.TrustedOrigins` takes the CORS allowlist, and `EnableCORS` mounts it with that list, so a group with CORS needs no second call. It exists because a cookie with `SameSite=Lax` is sent on a cross-origin POST from any host of the same site, and CORS only stops the page from reading the answer.
 
-`LimitRequestBody(maxBytes)` caps a request body: a body announced larger by `Content-Length` is refused with 413 up front (`{"error": "Die Anfrage ist zu groß.", "code": "too_large"}`), one that turns out larger fails the handler's read (400, as for any malformed body). Not mounted by default, since an upload route needs a larger limit than the rest. `APISecurityHeaders` sets what a JSON API's responses should carry: `nosniff`, no framing, no referrer and a `Content-Security-Policy` that lets a response opened as a document load nothing; for API groups only, as the policy would break an HTML page with inline styles.
+`LimitRequestBody(maxBytes)` caps a request body: a body announced larger by `Content-Length` is refused with 413 up front (`{"error": "Die Anfrage ist zu groß.", "code": "too_large"}`, "The request is too large." for `Accept-Language: en`), one that turns out larger fails the handler's read (400, as for any malformed body). Not mounted by default, since an upload route needs a larger limit than the rest. `APISecurityHeaders` sets what a JSON API's responses should carry: `nosniff`, no framing, no referrer and a `Content-Security-Policy` that lets a response opened as a document load nothing; for API groups only, as the policy would break an HTML page with inline styles.
 
 `Health` serves the probes: `GET /healthz` answers 200 while the process serves and checks nothing, since a liveness probe that fails over a dependency restarts a pod a restart cannot fix; `GET /readyz` runs the checks added with `AddCheck` concurrently (3 s for all of them by default) and answers 503 with the names of the failing ones under `failed`. A check added with `AddDegraded` is listed under `degraded` but never makes it 503: an identity provider that is away does not stop API tokens, and taking every pod out of the Service at once would turn a partial outage into a full one. `Mount(r)` registers both, before any authentication.
 
 `PageRequest(c)` and `Period(c, rule, now)` read `?limit`/`?offset` and `?from`/`?to` (packages `page` and `calendar`) and answer a refusal with its 400.
 
-`AbortError(c, *apierr.Error)` writes an `apierr` answer. The refusals this package writes itself carry a German text and a `code` too: `cross_origin`, `too_large`, `read_only`, `internal`.
+`AbortError(c, *apierr.Error)` writes an `apierr` answer, its text in the request's language. `Language()` stores that language in the request's context (`msg.FromAcceptLanguage`, German by default) and adds `Vary: Accept-Language`; `Lang(c)` reads it, or the header where the middleware is not mounted. The refusals this package writes itself carry a text in German and English and a `code`: `cross_origin`, `too_large`, `read_only`, `internal`.
 
 This is the one place the module takes gin, and the reasoning is `mcpserve`'s:
 a consumer that imports no `ginweb` still does not link gin because of it, but
@@ -287,13 +311,14 @@ twice before this package did:
   originals: they took the caller with a discarded `ok`, and a request that
   somehow reached the handler unauthenticated was served with a zero-valued
   caller — no identity, `ReadOnly()` false. The most permissive caller there is,
-  produced by the situation that should produce the least. Here it is a 401 (`{"error":"Anmeldung erforderlich.","code":"unauthenticated"}`).
+  produced by the situation that should produce the least. Here it is a 401 (`{"error":"Anmeldung erforderlich.","code":"unauthenticated"}`, "Sign-in required." in English).
+  It puts the request's language in the context the tools get (`msg.LangOf(ctx)`), and `AddTool` renders a tool's error that carries a text (`msg.Errorf`, `msg.Wrap`, `apierr.Error.MCPError`) in it; `ToolLang(ctx, req)` is that language for a tool registered otherwise.
   The handler is stateless: the MCP protocol from `2026-07-28` on is served only that way, and a server per request keeps no session anyway. Clients still on the session-based protocol are served too, without a session id; a GET for a notification stream gets 405, since no tool sends one. So does an OPTIONS request, before the handler looks for a caller: it is no MCP call, MCP clients are no browsers, and it must not build a server or reach the SDK.
 - **`ConfirmEcho`** — the "type the name back" step in front of a destructive
   tool. It is not a defence against prompt injection, and the doc comment says
   so: injected text can quote a name as easily as invent one. It catches a model
   that resolved "the old one" to the wrong thing, and it puts the real name in
-  front of the person approving the call.
+  front of the person approving the call. Its subject is a `msg.Text`, its refusal in German and English.
 
 `Caller` is an interface with a single method, `ReadOnly() bool`. Who the caller
 *is* never travels through this package — each service keeps its own caller type
@@ -311,7 +336,7 @@ still does not link it, but it does appear in `go.sum`.
 
 The test helpers each service with an MCP endpoint had written for itself, and the two drift checks that keep the tools in step with the REST API. It depends on the MCP SDK and `testing` only, no gin: routes are passed as `"METHOD /path"` strings, whatever router produced them.
 
-- `InMemory(t, server)` connects a client over an in-memory transport; `Dial(t, endpoint, bearer)` connects over streamable HTTP with `Authorization: Bearer <bearer>` on every request (none for an empty bearer), so a test goes through the service's real authentication. Both close the session when the test ends.
+- `InMemory(t, server)` connects a client over an in-memory transport; `Dial(t, endpoint, bearer)` connects over streamable HTTP with `Authorization: Bearer <bearer>` on every request (none for an empty bearer), so a test goes through the service's real authentication; `DialLang(t, endpoint, bearer, lang)` adds `Accept-Language`, `DialHeader` any headers. All close the session when the test ends.
 - `ToolNames` lists the offered tools, sorted; `Call` calls one and fails the test only when the call itself fails, so a tool's error comes back as a result with `IsError`; `Text` joins a result's text content.
 - `CheckRoutes(t, routes, tools, decisions)` holds every route against a `Route` decision: the `Tools` that do what it does, or the reason it is `Omitted` — exactly one of the two. It fails on a route with no decision, a decision for a route that does not exist, a named tool that is not offered, and a tool no route stands behind.
 - `CheckInputs(t, inputs)` holds each tool's input struct against the request type it feeds: every field of `Domain` is offered under its name, `Renamed`, or `Omitted` with a reason; stale `Renamed` or `Omitted` entries fail too. Fields are compared by JSON name; an untagged exported field counts under its name in snake_case (`GPUClass` is `gpu_class`), unexported fields do not count, and embedded structs are flattened, as `encoding/json` does.
@@ -330,7 +355,7 @@ Who a request is from, by its `Authorization` header: `Resolve(ctx, header, toke
 
 ### `apierr`
 
-How a service turns the errors of its operations into the answer of its API. `Error` is the answer: `Status`, a stable `Code` a client matches on, `Msg` for people (German, like every message to people on the platform), and a cause for the log that never reaches the caller (`Cause`, `WithCause`). A `Classifier` is one service's table: `Rules` in order — `Is` (a sentinel with a fixed answer), `IsWithText` (a sentinel answered with the error's own text, for operations whose messages are written for the caller), `As` (an error type) — and a `Fallback` (nil = `Internal`, 500 "Interner Fehler."). `Classify` answers an `*Error` anywhere in the chain as it is, then the first matching rule, then the fallback; `With` puts an area's rules in front of the service's. `Body` is `{"error": …, "code": …}`, which `ginweb.AbortError` writes; `MCPError` is the same text for an MCP tool, without the cause.
+How a service turns the errors of its operations into the answer of its API. `Error` is the answer: `Status`, a stable `Code` a client matches on, `Msg` for people (a `msg.Text`, German and English; `Error()` is the German one), and a cause for the log that never reaches the caller (`Cause`, `WithCause`). A `Classifier` is one service's table: `Rules` in order — `Is` (a sentinel with a fixed answer), `IsWithText` (a sentinel answered with the error's own text, `msg.TextOf`, for operations whose messages are written for the caller), `As` (an error type) — and a `Fallback` (nil = `Internal`, 500 "Interner Fehler." / "Internal error."; `apierr.Fallback(status, code)` answers with the error's own text). `Classify` answers an `*Error` anywhere in the chain as it is, then the first matching rule, then the fallback; `With` puts an area's rules in front of the service's. `Body(lang)` is `{"error": …, "code": …}` with the text in lang, which `ginweb.AbortError` writes in the request's language; `MCPError` is the same text for an MCP tool, without the cause, rendered in the caller's language by `mcpserve.AddTool`.
 
 ### `promtext`
 

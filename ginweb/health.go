@@ -9,12 +9,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pfisterer/cloud-self-service-golib/apierr"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
-// AbortError answers e as JSON ({"error": …, "code": …}) with its status and aborts the chain.
+// AbortError answers e as JSON ({"error": …, "code": …}) with its status, its text in the request's language (Lang), and aborts the chain.
 func AbortError(c *gin.Context, e *apierr.Error) {
-	c.AbortWithStatusJSON(e.Status, e.Body())
+	c.AbortWithStatusJSON(e.Status, e.Body(Lang(c)))
 }
+
+// Language stores the language the request asks for (msg.FromAcceptLanguage: de or en, German by default) in its context, where msg.LangOf finds it — in the handlers, in the services they call and in the tools of an MCP endpoint behind it. It also adds Vary: Accept-Language, since the text of an answer depends on it. Mount it on the engine, before everything that can answer with a text.
+func Language() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Vary", "Accept-Language")
+		if _, ok := msg.LangFrom(c.Request.Context()); !ok {
+			c.Request = c.Request.WithContext(msg.WithLang(c.Request.Context(), msg.FromAcceptLanguage(c.GetHeader("Accept-Language"))))
+		}
+		c.Next()
+	}
+}
+
+// Lang is the language of the request: the one Language stored, or, where it is not mounted, its Accept-Language header.
+func Lang(c *gin.Context) msg.Lang { return msg.FromRequest(c.Request) }
 
 // Check is one readiness check: nil when the dependency it names can be used.
 type Check func(ctx context.Context) error

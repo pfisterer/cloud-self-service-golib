@@ -19,7 +19,16 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/pfisterer/cloud-self-service-golib/apierr"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 	"go.uber.org/zap"
+)
+
+// The refusals this package writes itself.
+var (
+	errReadOnly    = apierr.New(http.StatusForbidden, "read_only", msg.T("Dieses API-Token darf nur lesen.", "This API token may only read."))
+	errCrossOrigin = apierr.New(http.StatusForbidden, "cross_origin", msg.T("Schreibende Anfragen von einer anderen Website werden abgelehnt.", "Writing requests from another website are refused."))
+	errTooLarge    = apierr.New(http.StatusRequestEntityTooLarge, "too_large", msg.T("Die Anfrage ist zu groß.", "The request is too large."))
 )
 
 // ── Caching ──────────────────────────────────────────────────────────────────
@@ -203,14 +212,14 @@ func RejectWritesForReadOnlyTokens(log *zap.SugaredLogger) gin.HandlerFunc {
 			if log != nil {
 				log.Errorf("No credential kind recorded for %s %s — is the auth middleware mounted before RejectWritesForReadOnlyTokens?", c.Request.Method, c.Request.URL.Path)
 			}
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Interner Fehler.", "code": "internal"})
+			AbortError(c, &apierr.Internal)
 			return
 		}
 		if readOnly {
 			if log != nil {
 				log.Warnf("Attempt to use read-only token for non-GET operation: %s %s", c.Request.Method, c.Request.URL.Path)
 			}
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Dieses API-Token darf nur lesen.", "code": "read_only"})
+			AbortError(c, errReadOnly)
 			return
 		}
 		c.Next()

@@ -12,6 +12,7 @@ import (
 
 	"github.com/pfisterer/cloud-self-service-golib/apierr"
 	"github.com/pfisterer/cloud-self-service-golib/day"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 // The names of the windows.
@@ -28,16 +29,16 @@ type Window struct {
 	Name string
 	// Days is how many calendar days it counts, today included; 0 for total, which counts since the start of whatever the budget belongs to.
 	Days int
-	// Label is its name for people in German, to follow "… verbraucht": heute, in 7 Tagen, insgesamt.
-	Label string
+	// Label is its name for people, to follow "… verbraucht" / "… used": heute / today, in 7 Tagen / in 7 days, insgesamt / in total.
+	Label msg.Text
 }
 
 // windows are all windows there are, shortest first.
 var windows = []Window{
-	{Window24h, 1, "heute"},
-	{Window7d, 7, "in 7 Tagen"},
-	{Window30d, 30, "in 30 Tagen"},
-	{WindowTotal, 0, "insgesamt"},
+	{Window24h, 1, msg.T("heute", "today")},
+	{Window7d, 7, msg.T("in 7 Tagen", "in 7 days")},
+	{Window30d, 30, msg.T("in 30 Tagen", "in 30 days")},
+	{WindowTotal, 0, msg.T("insgesamt", "in total")},
 }
 
 // Windows are all windows, shortest first, total last. The slice is a copy.
@@ -139,17 +140,17 @@ func (r Rule) Default(now time.Time) Period {
 	return Period{From: to.AddDays(-(r.days() - 1)), To: to}
 }
 
-func errPeriod(format string, args ...any) *apierr.Error {
-	return apierr.New(http.StatusBadRequest, "invalid", fmt.Sprintf(format, args...))
+func errPeriod(de, en string, args ...any) *apierr.Error {
+	return apierr.New(http.StatusBadRequest, "invalid", msg.F(de, en, args...))
 }
 
-// Parse reads from and to (YYYY-MM-DD, empty = as the rule says) at now. Its errors are a 400 (*apierr.Error, code invalid) with a German text.
+// Parse reads from and to (YYYY-MM-DD, empty = as the rule says) at now. Its errors are a 400 (*apierr.Error, code invalid) with a text in German and English.
 func (r Rule) Parse(from, to string, now time.Time) (Period, error) {
 	p := r.Default(now)
 	if s := strings.TrimSpace(to); s != "" {
 		t, err := time.Parse(day.Layout, s)
 		if err != nil {
-			return Period{}, errPeriod("to ist kein Tag im Format JJJJ-MM-TT: %q.", s)
+			return Period{}, errPeriod("to ist kein Tag im Format JJJJ-MM-TT: %q.", "to is not a day in the format YYYY-MM-DD: %q.", s)
 		}
 		p.To = day.New(t.Date())
 	}
@@ -157,15 +158,15 @@ func (r Rule) Parse(from, to string, now time.Time) (Period, error) {
 	if s := strings.TrimSpace(from); s != "" {
 		t, err := time.Parse(day.Layout, s)
 		if err != nil {
-			return Period{}, errPeriod("from ist kein Tag im Format JJJJ-MM-TT: %q.", s)
+			return Period{}, errPeriod("from ist kein Tag im Format JJJJ-MM-TT: %q.", "from is not a day in the format YYYY-MM-DD: %q.", s)
 		}
 		p.From = day.New(t.Date())
 	}
 	if p.From.After(p.To) {
-		return Period{}, errPeriod("from (%s) liegt nach to (%s).", p.From, p.To)
+		return Period{}, errPeriod("from (%s) liegt nach to (%s).", "from (%s) is after to (%s).", p.From, p.To)
 	}
 	if r.MaxDays > 0 && p.Days() > r.MaxDays {
-		return Period{}, errPeriod("Ein Zeitraum umfasst höchstens %d Tage, dieser %d.", r.MaxDays, p.Days())
+		return Period{}, errPeriod("Ein Zeitraum umfasst höchstens %d Tage, dieser %d.", "A period spans at most %d days, this one %d.", r.MaxDays, p.Days())
 	}
 	return p, nil
 }

@@ -6,13 +6,13 @@
 package page
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/pfisterer/cloud-self-service-golib/apierr"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 // DefaultLimit is the page size of a REST list when the caller names none; MaxLimit is the largest a caller gets, a larger limit is cut to it.
@@ -59,30 +59,30 @@ func (r Request) normalized() Request {
 }
 
 // errInvalid is the refusal of bounds that do not parse.
-func errInvalid(detail string) *apierr.Error {
-	return apierr.New(http.StatusBadRequest, "invalid", "Ungültige Angaben zum Blättern (limit, offset): "+detail)
+func errInvalid(detail msg.Text) *apierr.Error {
+	return apierr.New(http.StatusBadRequest, "invalid", msg.F("Ungültige Angaben zum Blättern (limit, offset): %s", "Invalid paging (limit, offset): %s", detail))
 }
 
-// Parse reads limit and offset as a query gives them: empty (or blank) is the default (DefaultLimit, 0), a limit above MaxLimit is cut to it. A value that is no number, a limit of 0 or less and a negative offset are a 400 (*apierr.Error, code invalid) with a German text.
+// Parse reads limit and offset as a query gives them: empty (or blank) is the default (DefaultLimit, 0), a limit above MaxLimit is cut to it. A value that is no number, a limit of 0 or less and a negative offset are a 400 (*apierr.Error, code invalid) with a text in German and English.
 func Parse(limit, offset string) (Request, error) {
 	r := Request{Limit: DefaultLimit}
 	if s := strings.TrimSpace(limit); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil {
-			return Request{}, errInvalid(fmt.Sprintf("limit ist keine ganze Zahl (%q).", s))
+			return Request{}, errInvalid(msg.F("limit ist keine ganze Zahl (%q).", "limit is not a whole number (%q).", s))
 		}
 		if n <= 0 {
-			return Request{}, errInvalid("limit muss größer als 0 sein.")
+			return Request{}, errInvalid(msg.T("limit muss größer als 0 sein.", "limit must be greater than 0."))
 		}
 		r.Limit = min(n, MaxLimit)
 	}
 	if s := strings.TrimSpace(offset); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil {
-			return Request{}, errInvalid(fmt.Sprintf("offset ist keine ganze Zahl (%q).", s))
+			return Request{}, errInvalid(msg.F("offset ist keine ganze Zahl (%q).", "offset is not a whole number (%q).", s))
 		}
 		if n < 0 {
-			return Request{}, errInvalid("offset darf nicht negativ sein.")
+			return Request{}, errInvalid(msg.T("offset darf nicht negativ sein.", "offset must not be negative."))
 		}
 		r.Offset = n
 	}

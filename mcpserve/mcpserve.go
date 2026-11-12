@@ -15,11 +15,16 @@ package mcpserve
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/pfisterer/cloud-self-service-golib/apierr"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
+
+// errUnauthenticated is the answer to a request without a caller.
+var errUnauthenticated = apierr.New(http.StatusUnauthorized, "unauthenticated", msg.T("Anmeldung erforderlich.", "Sign-in required."))
 
 // Caller is what this package needs to know about whoever is on the other end
 // of an MCP request. Exactly one thing: whether their credential may change
@@ -63,6 +68,8 @@ func CallerFrom[C Caller](ctx context.Context) (C, bool) {
 // should produce the least: authentication did not run.
 //
 // OPTIONS is answered 405 with "Allow: POST", as the SDK answers a GET for a notification stream.
+//
+// The request's language (msg.FromRequest: one a middleware already stored, else Accept-Language) is put in its context, where the tools find it (msg.LangOf) and where AddTool renders their errors in it.
 func Handler[C Caller](build func(C) *mcp.Server) http.Handler {
 	// Stateless: the protocol from 2026-07-28 on is served only in this mode,
 	// and it is the one that fits — a server per request already keeps no
@@ -80,11 +87,14 @@ func Handler[C Caller](build func(C) *mcp.Server) http.Handler {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		lang := msg.FromRequest(r)
 		if _, ok := CallerFrom[C](r.Context()); !ok {
-			http.Error(w, `{"error":"Anmeldung erforderlich.","code":"unauthenticated"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(errUnauthenticated.Status)
+			_ = json.NewEncoder(w).Encode(errUnauthenticated.Body(lang))
 			return
 		}
-		inner.ServeHTTP(w, r)
+		inner.ServeHTTP(w, r.WithContext(msg.WithLang(r.Context(), lang)))
 	})
 }
 
@@ -100,11 +110,30 @@ func Handler[C Caller](build func(C) *mcp.Server) http.Handler {
 // the HTTP layer: every MCP call is a POST, reads included, so the method cannot
 // stand in for "does this change anything" the way it can for REST. The tool
 // says what it does, and the check runs against that.
+//
+// A tool's error that carries a text for people (msg.Errorf, msg.Wrap, an apierr.Error) is rendered in the caller's language (ToolLang).
 func AddTool[In, Out any](s *mcp.Server, caller Caller, mutates bool, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
 	if mutates && caller.ReadOnly() {
 		return
 	}
-	mcp.AddTool(s, t, h)
+	mcp.AddTool(s, t, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		res, out, err := h(ctx, req, in)
+		if err != nil {
+			err = msg.Localize(err, ToolLang(ctx, req))
+		}
+		return res, out, err
+	})
+}
+
+// ToolLang is the language of a tool call: the one in ctx (put there by Handler or a middleware), else the Accept-Language of the HTTP request the call came with, else msg.Default.
+func ToolLang(ctx context.Context, req *mcp.CallToolRequest) msg.Lang {
+	if l, ok := msg.LangFrom(ctx); ok {
+		return l
+	}
+	if req != nil && req.Extra != nil && req.Extra.Header != nil {
+		return msg.FromAcceptLanguage(req.Extra.Header.Get("Accept-Language"))
+	}
+	return msg.Default
 }
 
 // ConfirmEcho refuses unless the caller echoed back the thing's own name.
@@ -116,13 +145,14 @@ func AddTool[In, Out any](s *mcp.Server, caller Caller, mutates bool, t *mcp.Too
 // front of the person whose client is asking them to approve the call.
 //
 // field is the argument's name, so the message names what to fix; subject
-// describes the thing in the service's own words ("budget b_17", "rule 4",
-// "the zone"). "is" rather than "is named", because for some things — a DNS
+// describes the thing in the service's own words, in both languages
+// (msg.T("Budget b_17", "budget b_17"), msg.T("die Zone", "the zone")). "is" rather than "is named", because for some things — a DNS
 // zone — the name IS the identity, and "the zone is named x" would say it twice.
-func ConfirmEcho(field, echoed, actual, subject string) error {
+func ConfirmEcho(field, echoed, actual string, subject msg.Text) error {
 	if echoed == actual {
 		return nil
 	}
-	return fmt.Errorf("%s %q does not match: %s is %q. Read it back before destroying it",
+	return msg.Errorf("%s %q stimmt nicht: %s ist %q. Vor dem Löschen erst lesen und den aktuellen Wert zurückgeben.",
+		"%s %q does not match: %s is %q. Read it back before destroying it",
 		field, echoed, subject, actual)
 }

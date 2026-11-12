@@ -10,6 +10,7 @@ import (
 
 	"github.com/pfisterer/cloud-self-service-golib/apierr"
 	"github.com/pfisterer/cloud-self-service-golib/day"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 func at(s string) time.Time {
@@ -27,7 +28,7 @@ func TestWindows(t *testing.T) {
 	if got := NamesOf(Only(Window30d, Window24h, Window7d)); !slices.Equal(got, []string{"24h", "7d", "30d"}) {
 		t.Errorf("Only = %v", got)
 	}
-	if w, ok := Lookup("7d"); !ok || w.Days != 7 || w.Label != "in 7 Tagen" {
+	if w, ok := Lookup("7d"); !ok || w.Days != 7 || w.Label.In(msg.DE) != "in 7 Tagen" || w.Label.In(msg.EN) != "in 7 days" {
 		t.Errorf("Lookup(7d) = %+v, %v", w, ok)
 	}
 	if _, ok := Lookup("1y"); ok {
@@ -148,7 +149,7 @@ func TestRuleParseRefuses(t *testing.T) {
 	} {
 		_, err := Report(tc.max).Parse(tc.from, tc.to, now)
 		e, ok := errors.AsType[*apierr.Error](err)
-		if !ok || e.Status != http.StatusBadRequest || e.Code != "invalid" || !strings.Contains(e.Msg, tc.text) {
+		if !ok || e.Status != http.StatusBadRequest || e.Code != "invalid" || !strings.Contains(e.Msg.In(msg.DE), tc.text) || !e.Msg.Complete() {
 			t.Errorf("Parse(%q, %q) = %v; want a 400 with %q", tc.from, tc.to, err, tc.text)
 		}
 	}

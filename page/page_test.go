@@ -29,7 +29,7 @@ func TestParse(t *testing.T) {
 	for _, tc := range [][2]string{{"x", ""}, {"0", ""}, {"-1", ""}, {"", "-1"}, {"", "y"}, {"1.5", ""}} {
 		_, err := Parse(tc[0], tc[1])
 		e, ok := errors.AsType[*apierr.Error](err)
-		if !ok || e.Status != http.StatusBadRequest || e.Code != "invalid" || e.Msg == "" {
+		if !ok || e.Status != http.StatusBadRequest || e.Code != "invalid" || !e.Msg.Complete() {
 			t.Errorf("Parse(%q, %q) = %v; want a 400 invalid", tc[0], tc[1], err)
 		}
 	}

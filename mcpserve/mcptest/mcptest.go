@@ -45,26 +45,51 @@ func InMemory(t testing.TB, s *mcp.Server) *mcp.ClientSession {
 	return cs
 }
 
-// bearerTransport puts the token on every request, the way an MCP client configured with one does.
-type bearerTransport struct {
-	bearer string
+// headerTransport puts the headers on every request, the way an MCP client configured with a token (or a language) does.
+type headerTransport struct {
+	header http.Header
 	base   http.RoundTripper
 }
 
-func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+func (h headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	clone := r.Clone(r.Context())
-	clone.Header.Set("Authorization", "Bearer "+b.bearer)
-	return b.base.RoundTrip(clone)
+	for k, v := range h.header {
+		clone.Header[k] = v
+	}
+	return h.base.RoundTrip(clone)
 }
 
 // Dial connects to the streamable HTTP endpoint (the full URL, e.g. srv.URL + "/mcp") with "Authorization: Bearer <bearer>" on every request, or with no Authorization header when bearer is empty. The session is closed when the test ends; a failure to connect fails the test.
 func Dial(t testing.TB, endpoint, bearer string) *mcp.ClientSession {
 	t.Helper()
+	return DialHeader(t, endpoint, bearer, nil)
+}
+
+// DialLang is Dial with "Accept-Language: <lang>" on every request (none when lang is empty), for a test of the language of the answers.
+func DialLang(t testing.TB, endpoint, bearer, lang string) *mcp.ClientSession {
+	t.Helper()
+	header := http.Header{}
+	if lang != "" {
+		header.Set("Accept-Language", lang)
+	}
+	return DialHeader(t, endpoint, bearer, header)
+}
+
+// DialHeader is Dial with header added to every request.
+func DialHeader(t testing.TB, endpoint, bearer string, header http.Header) *mcp.ClientSession {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	t.Cleanup(cancel)
 	transport := &mcp.StreamableClientTransport{Endpoint: endpoint}
+	header = header.Clone()
 	if bearer != "" {
-		transport.HTTPClient = &http.Client{Transport: bearerTransport{bearer: bearer, base: http.DefaultTransport}}
+		if header == nil {
+			header = http.Header{}
+		}
+		header.Set("Authorization", "Bearer "+bearer)
+	}
+	if len(header) > 0 {
+		transport.HTTPClient = &http.Client{Transport: headerTransport{header: header, base: http.DefaultTransport}}
 	}
 	cs, err := newClient().Connect(ctx, transport, nil)
 	if err != nil {

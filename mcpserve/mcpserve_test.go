@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pfisterer/cloud-self-service-golib/mcpserve"
+	"github.com/pfisterer/cloud-self-service-golib/msg"
 )
 
 // testCaller is what a service's own caller type looks like from here: anything
@@ -238,11 +239,11 @@ func TestCallerFrom_IsTypedPerCallerType(t *testing.T) {
 }
 
 func TestConfirmEcho(t *testing.T) {
-	if err := mcpserve.ConfirmEcho("confirm_name", "prod", "prod", "budget b_17"); err != nil {
+	if err := mcpserve.ConfirmEcho("confirm_name", "prod", "prod", msg.T("Budget b_17", "budget b_17")); err != nil {
 		t.Errorf("a matching echo must pass, got %v", err)
 	}
 
-	err := mcpserve.ConfirmEcho("confirm_name", "staging", "prod", "budget b_17")
+	err := msg.Localize(mcpserve.ConfirmEcho("confirm_name", "staging", "prod", msg.T("Budget b_17", "budget b_17")), msg.EN)
 	if err == nil {
 		t.Fatal("a mismatched echo must be refused")
 	}
