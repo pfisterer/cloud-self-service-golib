@@ -72,6 +72,10 @@ func FromAcceptLanguage(header string) Lang {
 
 // FromRequest is the language r asks for: one already in its context (WithLang, put there by a middleware), else its Accept-Language header.
 func FromRequest(r *http.Request) Lang {
+	// No request (a gin context built without one, e.g. in a test) is the default, not a panic.
+	if r == nil {
+		return Default
+	}
 	if l, ok := LangFrom(r.Context()); ok {
 		return l
 	}

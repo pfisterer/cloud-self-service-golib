@@ -131,3 +131,9 @@ func TestErrors(t *testing.T) {
 		t.Fatal("Errorf is Localized")
 	}
 }
+
+func TestFromRequestNil(t *testing.T) {
+	if got := msg.FromRequest(nil); got != msg.Default {
+		t.Fatalf("FromRequest(nil) = %q, want %q", got, msg.Default)
+	}
+}
