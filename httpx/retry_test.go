@@ -27,11 +27,15 @@ func TestRetryBrokenConnection(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 	c := RetryingClient(10 * time.Second)
+	before := Retries.Value("connection", "recovered")
 	resp, err := c.Get(srv.URL)
 	if err != nil || resp.StatusCode != http.StatusOK || calls.Load() != 2 {
 		t.Fatalf("GET: %v %d", err, calls.Load())
 	}
 	resp.Body.Close()
+	if got := Retries.Value("connection", "recovered") - before; got != 1 {
+		t.Fatalf("Retries connection/recovered went up by %v, want 1", got)
+	}
 	calls.Store(0)
 	if _, err := c.Post(srv.URL, "text/plain", nil); err == nil || calls.Load() != 1 {
 		t.Fatalf("POST repeated: %v %d", err, calls.Load())
@@ -59,8 +63,12 @@ func TestRetryDNSAttempts(t *testing.T) {
 	dnsErr := &net.DNSError{Err: "no such host", Name: "x.invalid", IsNotFound: true}
 	f := &failing{err: dnsErr}
 	c := &http.Client{Transport: retrying{next: f}}
+	failed := Retries.Value("dns", "failed")
 	if _, err := c.Get("http://x.invalid/"); err == nil || f.calls != policy.Attempts {
 		t.Fatalf("GET: %v after %d calls, want %d", err, f.calls, policy.Attempts)
+	}
+	if got := Retries.Value("dns", "failed") - failed; got != 1 {
+		t.Fatalf("Retries dns/failed went up by %v, want 1", got)
 	}
 	f.calls = 0
 	if _, err := c.Post("http://x.invalid/", "text/plain", strings.NewReader("a")); err == nil || f.calls != policy.Attempts {
@@ -68,8 +76,12 @@ func TestRetryDNSAttempts(t *testing.T) {
 	}
 	f.calls = 0
 	req, _ := http.NewRequest(http.MethodPost, "http://x.invalid/", io.NopCloser(strings.NewReader("a")))
+	failed = Retries.Value("dns", "failed")
 	if _, err := c.Do(req); err == nil || f.calls != 1 {
 		t.Fatalf("POST without GetBody: %v after %d calls, want 1", err, f.calls)
+	}
+	if got := Retries.Value("dns", "failed") - failed; got != 0 {
+		t.Fatalf("a request sent once counted as repeated (%v)", got)
 	}
 	f.calls = 0
 	f.err = errors.New("connection refused")

@@ -13,8 +13,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/promtext"
 	"github.com/pfisterer/cloud-self-service-golib/retry"
 )
+
+// Retries counts the requests a retrying client repeated, by why (dns: a name that did not resolve; connection: a connection that broke before the answer) and how it ended (recovered: a later attempt got an answer; failed: every attempt failed). It answers whether the repeating is still needed: a service writes it into its /metrics (Retries.WriteTo).
+var Retries = func() *promtext.CounterVec {
+	c := promtext.NewCounterVec("httpx_retries_total", "Requests to other hosts that were repeated after failing on the way out, by reason (dns, connection) and result (recovered, failed). Counted since the service started.", "reason", "result")
+	for _, reason := range []string{"dns", "connection"} {
+		for _, result := range []string{"recovered", "failed"} {
+			c.Init(reason, result)
+		}
+	}
+	return c
+}()
 
 // policy tries a request at most three times, 1 s and 2 s apart (retry.Do doubles from 1 s, at most 2 s); no time limit of its own, the request's context and the client's timeout are.
 var policy = retry.Policy{Attempts: 3, Total: -1, Initial: time.Second, Max: 2 * time.Second}
@@ -25,7 +37,8 @@ type retrying struct{ next http.RoundTripper }
 func (r retrying) RoundTrip(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	var last error
-	attempt := 0
+	attempt, sent := 0, 0
+	reason := ""
 	err := retry.Do(req.Context(), policy, func(context.Context) error {
 		attempt++
 		if attempt > 1 && req.Body != nil {
@@ -38,31 +51,48 @@ func (r retrying) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			req.Body = body
 		}
+		sent++
 		resp, last = r.next.RoundTrip(req)
-		if last != nil && !retryable(req, last) {
-			return retry.Permanent(last)
+		if last != nil {
+			r := retryReason(req, last)
+			if r == "" {
+				return retry.Permanent(last)
+			}
+			if reason == "" {
+				reason = r
+			}
 		}
 		return last
 	})
 	if attempt == 0 { // the context ended before the first attempt
 		return nil, err
 	}
+	if sent > 1 { // repeated for real, not only given up before sending again
+		result := "recovered"
+		if last != nil {
+			result = "failed"
+		}
+		Retries.Inc(reason, result)
+	}
 	return resp, last
 }
 
-// retryable tells whether a failed request is worth another attempt: a name that did not resolve, or, for a request without side effects, a connection that broke before the answer.
-func retryable(req *http.Request, err error) bool {
+// retryReason tells whether a failed request is worth another attempt and why, as Retries counts it: "dns" for a name that did not resolve, "connection" for a request without side effects whose connection broke before the answer, "" for no further attempt.
+func retryReason(req *http.Request, err error) string {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return true
+		return "dns"
 	}
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
-		return false
+		return ""
 	}
 	if req.Context().Err() != nil {
-		return false
+		return ""
 	}
-	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "TLS handshake timeout")
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "TLS handshake timeout") {
+		return "connection"
+	}
+	return ""
 }
 
 // transport is the default transport with a shorter TLS handshake timeout, so a stuck handshake leaves room for another attempt within a client's timeout.
