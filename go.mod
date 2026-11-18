@@ -6,6 +6,8 @@ module github.com/pfisterer/cloud-self-service-golib
 // module is meant to avoid.
 go 1.26.0
 
+toolchain go1.27.4
+
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/gin-contrib/cors v1.7.7
