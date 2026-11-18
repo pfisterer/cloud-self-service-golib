@@ -73,6 +73,8 @@ var (
 	// ErrInvalidTTL is returned for a TTL of zero or a negative one that is not
 	// NeverExpires.
 	ErrInvalidTTL = errors.New("token: TTL must be positive or NeverExpires")
+	// ErrNoPrefix is what NewService panics with, and tokengorm.NewService returns, for an empty prefix.
+	ErrNoPrefix = errors.New("token: prefix is required")
 	// ErrNoSubject is returned when no identity was given to issue a token for.
 	ErrNoSubject = errors.New("token: subject is required")
 	// ErrDescriptionTooLong is returned for a description over MaxDescriptionLen.
@@ -235,7 +237,12 @@ type Service struct {
 // NewService returns a Service issuing tokens under the given prefix — the
 // string that tells this service's tokens apart from an OIDC bearer token and
 // from another service's, e.g. "dynz_token_" or "os_mgt_".
+//
+// An empty prefix panics. Owns would then claim every bearer — an OIDC ID token included — as one of this service's tokens, so no sign-in would ever reach the verifier; the prefix is a constant in every service, so this is a programming error that shows on the first start, not a runtime condition.
 func NewService(prefix string, store Store) *Service {
+	if prefix == "" {
+		panic(ErrNoPrefix)
+	}
 	return &Service{prefix: prefix, store: store, now: time.Now}
 }
 

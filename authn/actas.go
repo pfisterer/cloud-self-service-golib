@@ -19,14 +19,17 @@ var (
 
 // ActAs returns the identity a request acts as: the actor themself without the header, else the address in it.
 //
-// The address is trimmed and lowercased, as Identity does. Naming oneself is no switch at all and needs no right. Everything else is refused unless mayActAs holds — an error, never a silent fallback to the actor: an admin who believes they act for somebody else and actually acts as themself would act on the wrong things.
+// The address must be one CanonicalEmail accepts — plain ASCII, one "@", no blanks, commas or other separators — and comes back in that canonical form (trimmed, lowercased), the same string Identity gives for that person; anything else is ErrActAsInvalid, whatever mayActAs says. Naming oneself is no switch at all and needs no right. Everything else is refused unless mayActAs holds — an error, never a silent fallback to the actor: an admin who believes they act for somebody else and actually acts as themself would act on the wrong things.
 func ActAs(header, actor string, mayActAs bool) (string, error) {
-	target := strings.ToLower(strings.TrimSpace(header))
-	if target == "" || target == strings.ToLower(strings.TrimSpace(actor)) {
+	if strings.TrimSpace(header) == "" {
 		return actor, nil
 	}
-	if !strings.Contains(target, "@") || strings.ContainsAny(target, " \t,;") {
+	target, err := CanonicalEmail(header)
+	if err != nil {
 		return "", ErrActAsInvalid
+	}
+	if target == strings.ToLower(strings.TrimSpace(actor)) {
+		return actor, nil
 	}
 	if !mayActAs {
 		return "", ErrActAsForbidden

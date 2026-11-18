@@ -375,3 +375,9 @@ func TestCreatedBySurvivesTheDatabase(t *testing.T) {
 		t.Errorf("rows with NULL created_by: %d (%v), want 0", nulls, err)
 	}
 }
+
+func TestNewServiceRejectsAnEmptyPrefix(t *testing.T) {
+	if _, err := NewService("", newDB(t)); !errors.Is(err, token.ErrNoPrefix) {
+		t.Fatalf("err = %v, want token.ErrNoPrefix", err)
+	}
+}

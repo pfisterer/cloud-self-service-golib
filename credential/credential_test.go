@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/cloud-self-service-golib/credential"
 	"github.com/pfisterer/cloud-self-service-golib/oidcauth"
 	"github.com/pfisterer/cloud-self-service-golib/token"
@@ -86,6 +87,11 @@ func (p *provider) verifier(t *testing.T) *oidcauth.Verifier {
 	return v
 }
 
+// fixedVerifier stands in for another Verifier implementation, answering every token with the same claims.
+type fixedVerifier struct{ claims *authn.Claims }
+
+func (f fixedVerifier) Verify(context.Context, string) (*authn.Claims, error) { return f.claims, nil }
+
 // brokenStore fails every lookup the way a database that is away does.
 type brokenStore struct{ token.Store }
 
@@ -111,7 +117,14 @@ func TestResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	broken := token.NewService(prefix, brokenStore{})
-	good := p.sign(t, map[string]any{"sub": "s-1", "email": "Carla@Example.org"})
+	good := p.sign(t, map[string]any{"sub": "s-1", "email": "Carla@Example.org", "email_verified": true})
+	unverified := p.sign(t, map[string]any{"sub": "s-1", "email": "carla@example.org", "email_verified": false})
+	serviceAccount := p.sign(t, map[string]any{"sub": "s-1", "preferred_username": "service-account-x"})
+	// A token issued before identities had to be addresses, under a username.
+	legacy, err := tokens.Issue(ctx, "carla", token.IssueOptions{TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
 	otherAudience := p.sign(t, map[string]any{"sub": "s-1", "aud": "another-client"})
 	stale := p.sign(t, map[string]any{"sub": "s-1", "exp": time.Now().Add(-time.Hour).Unix()})
 
@@ -147,6 +160,10 @@ func TestResolve(t *testing.T) {
 		{name: "id token", header: "Bearer " + good, tokens: tokens, verifier: v, identity: "carla@example.org"},
 		{name: "id token, no token service", header: "Bearer " + good, tokens: nil, verifier: v, identity: "carla@example.org"},
 		{name: "id token, nil *token.Service", header: "Bearer " + good, tokens: nilService, verifier: v, identity: "carla@example.org"},
+		{name: "id token with an unverified address", header: "Bearer " + unverified, tokens: tokens, verifier: v, wantErr: credential.ErrRejected},
+		{name: "id token without an address", header: "Bearer " + serviceAccount, tokens: tokens, verifier: v, wantErr: credential.ErrRejected},
+		{name: "another verifier's claims without an identity", header: "Bearer x.y.z", tokens: tokens, verifier: fixedVerifier{&authn.Claims{Subject: "s-1", PreferredUsername: "carla@example.org"}}, wantErr: credential.ErrRejected},
+		{name: "api token whose subject is no identity", header: "Bearer " + legacy.Secret, tokens: tokens, verifier: v, wantErr: credential.ErrRejected},
 		{name: "id token for another audience", header: "Bearer " + otherAudience, tokens: tokens, verifier: v, wantErr: credential.ErrRejected},
 		{name: "expired id token", header: "Bearer " + stale, tokens: tokens, verifier: v, wantErr: credential.ErrRejected},
 		{name: "garbage bearer", header: "Bearer not-a-jwt", tokens: tokens, verifier: v, wantErr: credential.ErrRejected},

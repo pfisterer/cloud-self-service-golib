@@ -19,6 +19,13 @@ func TestActAs(t *testing.T) {
 		{name: "forbidden", header: "student@x.de", actor: "someone@x.de", err: ErrActAsForbidden},
 		{name: "not an address", header: "group:root", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
 		{name: "two addresses", header: "a@x.de,b@x.de", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
+		{name: "two addresses with a blank", header: "a@x.de b@x.de", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
+		{name: "display name form", header: "Bob <bob@x.de>", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
+		{name: "non-ASCII", header: "jürgen@x.de", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
+		{name: "Kelvin sign is not k", header: "\u212Aarl@x.de", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
+		{name: "no local part", header: "@x.de", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
+		{name: "control character", header: "bob\x00@x.de", actor: "admin@x.de", may: true, err: ErrActAsInvalid},
+		{name: "invalid is invalid even without the right", header: "not-an-address", actor: "someone@x.de", err: ErrActAsInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

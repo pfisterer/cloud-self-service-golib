@@ -535,3 +535,13 @@ func TestIssueRecordsCreatedBy(t *testing.T) {
 		t.Errorf("an own token: %v, CreatedBy %q", err, own.CreatedBy)
 	}
 }
+
+// An empty prefix would make Owns claim every bearer, OIDC ID tokens included, so no sign-in would reach the verifier.
+func TestNewServiceRejectsAnEmptyPrefix(t *testing.T) {
+	defer func() {
+		if r := recover(); r != ErrNoPrefix {
+			t.Fatalf("recover() = %v, want ErrNoPrefix", r)
+		}
+	}()
+	NewService("", NewMemoryStore())
+}

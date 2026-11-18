@@ -28,11 +28,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/go-oidc"
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pfisterer/cloud-self-service-golib/authn"
 	"github.com/pfisterer/cloud-self-service-golib/retry"
 	"go.uber.org/zap"
@@ -43,14 +46,20 @@ import (
 // not 401.
 var ErrKeysUnavailable = errors.New("oidc: signing keys are currently unavailable")
 
-var errNoIssuer = errors.New("oidcauth: issuer URL is required")
+// ErrNoIdentity is returned by Verify for a token that verifies but names nobody the platform can key on: no e-mail address, one that is not verified, or one that is not plain ASCII (authn.Claims.CheckIdentity). The error wraps the reason. Callers answer 401, like any other rejected token.
+var ErrNoIdentity = errors.New("oidcauth: the token names no verified e-mail address")
+
+var (
+	errNoIssuer   = errors.New("oidcauth: issuer URL is required")
+	errNoClientID = errors.New("oidcauth: client ID is required")
+)
 
 // Config is what a deployment states about its provider.
 type Config struct {
 	// IssuerURL is verified against the token's iss claim. Required, with or
 	// without discovery.
 	IssuerURL string
-	// ClientID is the audience a token must carry.
+	// ClientID is the audience a token must carry. Required: without it there is no audience to check, and a token issued to any other client of the realm would do.
 	ClientID string
 	// JWKSURL is the provider's key set. Set it, and nothing is fetched at
 	// startup; leave it empty to discover it from IssuerURL, which requires the
@@ -61,9 +70,16 @@ type Config struct {
 	// because a fetch failure is a moment, while "the provider is away" is a
 	// state, and the status shown to a user has to be the latter.
 	KeyFailureWindow time.Duration
+	// MinRefetchInterval is the shortest time between two fetches of the key set. Zero means the default below. go-oidc fetches the key set again for every token whose key it does not know, so without a floor each forged token with an unknown kid — which anybody can send — is a request to the provider. Within the interval the last answer is used again: a token signed with a key that appeared since then is rejected until the interval has passed, which is the price of the floor.
+	MinRefetchInterval time.Duration
 }
 
-const defaultKeyFailureWindow = 2 * time.Minute
+const (
+	defaultKeyFailureWindow   = 2 * time.Minute
+	defaultMinRefetchInterval = 10 * time.Second
+	// maxKeySetBytes caps what is read of a key set response. A realm's key set is a few kilobytes.
+	maxKeySetBytes = 1 << 20
+)
 
 // Verifier checks ID tokens and remembers whether the last attempt to reach the
 // provider's key set worked.
@@ -79,22 +95,35 @@ type Verifier struct {
 // empty, in which case it discovers the key set from the issuer and fails if
 // the provider is unreachable.
 func New(cfg Config, log *zap.SugaredLogger) (*Verifier, error) {
-	if cfg.IssuerURL == "" {
+	if strings.TrimSpace(cfg.IssuerURL) == "" {
 		return nil, errNoIssuer
+	}
+	if strings.TrimSpace(cfg.ClientID) == "" {
+		return nil, errNoClientID
 	}
 	window := cfg.KeyFailureWindow
 	if window <= 0 {
 		window = defaultKeyFailureWindow
 	}
 
+	minRefetch := cfg.MinRefetchInterval
+	if minRefetch <= 0 {
+		minRefetch = defaultMinRefetchInterval
+	}
+
 	health := &keyFetchHealth{window: window}
 	// Every key fetch goes through this client, which is the only place that
 	// learns whether the provider answered. go-oidc reports "could not verify"
 	// either way, so without it a dead provider and a forged token are the same
-	// error string.
+	// error string. The throttle sits outside the health recording, so an
+	// answer it repeats is not counted as a second exchange with the provider.
 	client := &http.Client{
-		Timeout:   10 * time.Second,
-		Transport: &healthRecordingTransport{inner: http.DefaultTransport, health: health},
+		Timeout: 10 * time.Second,
+		Transport: &throttledTransport{
+			inner:    &healthRecordingTransport{inner: http.DefaultTransport, health: health},
+			interval: minRefetch,
+			now:      time.Now,
+		},
 	}
 
 	oidcConfig := &oidc.Config{ClientID: cfg.ClientID}
@@ -127,7 +156,7 @@ func New(cfg Config, log *zap.SugaredLogger) (*Verifier, error) {
 	}, nil
 }
 
-// NewWithRetry is New, tried again by p while discovery fails: with an empty JWKSURL, New asks the provider at once, and right after a pod starts that can fail although nothing is wrong (the NetworkPolicies let a new pod through only a moment later). With JWKSURL set New makes no network call, so it is called once. A missing issuer is not tried again. p.OnRetry, when nil, logs each failed attempt at info level; the zero Policy tries for 60 s.
+// NewWithRetry is New, tried again by p while discovery fails: with an empty JWKSURL, New asks the provider at once, and right after a pod starts that can fail although nothing is wrong (the NetworkPolicies let a new pod through only a moment later). With JWKSURL set New makes no network call, so it is called once. A missing issuer or client ID is not tried again. p.OnRetry, when nil, logs each failed attempt at info level; the zero Policy tries for 60 s.
 func NewWithRetry(ctx context.Context, cfg Config, log *zap.SugaredLogger, p retry.Policy) (*Verifier, error) {
 	if p.OnRetry == nil {
 		p.OnRetry = func(attempt int, err error, wait time.Duration) {
@@ -138,7 +167,7 @@ func NewWithRetry(ctx context.Context, cfg Config, log *zap.SugaredLogger, p ret
 	err := retry.Do(ctx, p, func(context.Context) error {
 		var err error
 		v, err = New(cfg, log)
-		if errors.Is(err, errNoIssuer) {
+		if errors.Is(err, errNoIssuer) || errors.Is(err, errNoClientID) {
 			return retry.Permanent(err)
 		}
 		return err
@@ -149,7 +178,7 @@ func NewWithRetry(ctx context.Context, cfg Config, log *zap.SugaredLogger, p ret
 	return v, nil
 }
 
-// Verify checks signature, issuer, audience and expiry and returns the claims.
+// Verify checks signature, issuer, audience and expiry, and that the token names a person by a verified, plain ASCII e-mail address (ErrNoIdentity otherwise), and returns the claims.
 //
 // A failure while the key set is unreachable is reported as ErrKeysUnavailable,
 // wrapped around the original error so the log still says what happened.
@@ -173,6 +202,10 @@ func (v *Verifier) Verify(ctx context.Context, rawIDToken string) (*authn.Claims
 	var claims authn.Claims
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("oidcauth: parse claims: %w", err)
+	}
+	// A token that names nobody is refused here, at the one place tokens enter, so a service that reads claims.Email itself instead of Identity() gets only verified, plain addresses too.
+	if _, err := claims.CheckIdentity(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNoIdentity, err)
 	}
 	return &claims, nil
 }
@@ -262,4 +295,75 @@ func (t *healthRecordingTransport) RoundTrip(req *http.Request) (*http.Response,
 		t.health.recordSuccess(now)
 	}
 	return res, err
+}
+
+// throttledTransport keeps at least interval between two requests for the same URL: within it, the last answer (or error) is handed out again without asking the provider. go-oidc's RemoteKeySet fetches the key set anew for every token whose kid it does not know; this is what keeps a stream of forged tokens from becoming a stream of requests to the identity provider. Only GET is throttled — that is all go-oidc sends.
+type throttledTransport struct {
+	inner    http.RoundTripper
+	interval time.Duration
+	now      func() time.Time
+
+	mu   sync.Mutex
+	last map[string]*recordedAnswer
+}
+
+// recordedAnswer is a response read to the end, so it can be handed out more than once, or the error in its place.
+type recordedAnswer struct {
+	at     time.Time
+	status int
+	text   string
+	header http.Header
+	body   []byte
+	err    error
+}
+
+func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method != http.MethodGet {
+		return t.inner.RoundTrip(req)
+	}
+	key := req.URL.String()
+
+	// Held across the fetch: a second caller for the same URL waits for the answer and gets it, instead of sending its own request.
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if a, ok := t.last[key]; ok && t.now().Sub(a.at) < t.interval {
+		return a.replay(req)
+	}
+
+	a := &recordedAnswer{}
+	res, err := t.inner.RoundTrip(req)
+	if err != nil {
+		a.err = err
+	} else {
+		body, readErr := io.ReadAll(io.LimitReader(res.Body, maxKeySetBytes))
+		_ = res.Body.Close()
+		if readErr != nil {
+			a.err = readErr
+		} else {
+			a.status, a.text, a.header, a.body = res.StatusCode, res.Status, res.Header.Clone(), body
+		}
+	}
+	a.at = t.now()
+	if t.last == nil {
+		t.last = make(map[string]*recordedAnswer)
+	}
+	t.last[key] = a
+	return a.replay(req)
+}
+
+func (a *recordedAnswer) replay(req *http.Request) (*http.Response, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
+	return &http.Response{
+		Status:        a.text,
+		StatusCode:    a.status,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        a.header.Clone(),
+		Body:          io.NopCloser(strings.NewReader(string(a.body))),
+		ContentLength: int64(len(a.body)),
+		Request:       req,
+	}, nil
 }

@@ -2,59 +2,139 @@ package authn
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 )
 
-func TestClaimsIdentity(t *testing.T) {
+// fromToken decodes claims the way oidcauth.Verify does, so Identity treats them as a provider's assertion.
+func fromToken(t *testing.T, raw string) *Claims {
+	t.Helper()
+	var c Claims
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatalf("Unmarshal(%s): %v", raw, err)
+	}
+	return &c
+}
+
+// Claims decoded from a token: the address counts only when verified, and nothing else stands in for it.
+func TestClaimsIdentityFromToken(t *testing.T) {
+	cases := []struct {
+		name  string
+		token string
+		want  string
+		err   error
+	}{
+		{name: "verified address", token: `{"sub":"s1","email":"alice@example.edu","email_verified":true}`, want: "alice@example.edu"},
+		{name: "verified as a string", token: `{"sub":"s1","email":"alice@example.edu","email_verified":"true"}`, want: "alice@example.edu"},
+		{name: "verified address is lowercased and trimmed", token: `{"email":"  Alice@Example.EDU ","email_verified":true}`, want: "alice@example.edu"},
+		{name: "unverified address", token: `{"sub":"s1","email":"alice@example.edu","email_verified":false}`, err: ErrEmailNotVerified},
+		{name: "email_verified missing", token: `{"sub":"s1","email":"alice@example.edu"}`, err: ErrEmailNotVerified},
+		{name: "email_verified null", token: `{"email":"alice@example.edu","email_verified":null}`, err: ErrEmailNotVerified},
+		{name: "email_verified is some other string", token: `{"email":"alice@example.edu","email_verified":"yes"}`, err: ErrEmailNotVerified},
+		{name: "email_verified is a number", token: `{"email":"alice@example.edu","email_verified":1}`, err: ErrEmailNotVerified},
+		// The old fallbacks: a username or sub that looks like somebody's address must not become that person.
+		{name: "no address, username looks like an address", token: `{"sub":"s1","preferred_username":"bob@dhbw.de"}`, err: ErrNoEmail},
+		{name: "no address, plain username", token: `{"sub":"s1","preferred_username":"alice"}`, err: ErrNoEmail},
+		{name: "only sub", token: `{"sub":"bob@dhbw.de"}`, err: ErrNoEmail},
+		{name: "blank address", token: `{"sub":"s1","email":"   ","email_verified":true}`, err: ErrNoEmail},
+		{name: "no claims at all", token: `{}`, err: ErrNoEmail},
+		// A Keycloak client-credentials token: no address, preferred_username service-account-<client>.
+		{name: "service account", token: `{"sub":"5f0c","preferred_username":"service-account-role-provider","email_verified":false}`, err: ErrNoEmail},
+		{name: "non-ASCII address, verified", token: `{"email":"jürgen@example.edu","email_verified":true}`, err: ErrInvalidEmail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fromToken(t, tc.token)
+			got, err := c.CheckIdentity()
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("CheckIdentity() err = %v, want %v", err, tc.err)
+			}
+			if got != tc.want || c.Identity() != tc.want {
+				t.Errorf("CheckIdentity() = %q, Identity() = %q, want %q", got, c.Identity(), tc.want)
+			}
+		})
+	}
+}
+
+// Claims built in code are the service's own word (an API token's subject, the X-Act-As target, the dev user): no email_verified needed, the address rules still hold, and there is still no fallback.
+func TestClaimsIdentityBuiltInCode(t *testing.T) {
 	cases := []struct {
 		name   string
 		claims *Claims
 		want   string
+		err    error
 	}{
-		{name: "nil claims", claims: nil, want: ""},
-		{name: "empty claims", claims: &Claims{}, want: ""},
-		{
-			name:   "email wins",
-			claims: &Claims{Subject: "s1", Email: "alice@example.edu", PreferredUsername: "alice"},
-			want:   "alice@example.edu",
-		},
-		{
-			name:   "preferred_username when no email",
-			claims: &Claims{Subject: "s1", PreferredUsername: "alice"},
-			want:   "alice",
-		},
-		{
-			name:   "sub is the last resort",
-			claims: &Claims{Subject: "s1"},
-			want:   "s1",
-		},
-		{
-			name:   "blank claims are skipped, not returned",
-			claims: &Claims{Subject: "s1", Email: "   "},
-			want:   "s1",
-		},
-		{
-			name:   "the answer is trimmed",
-			claims: &Claims{Email: "  alice@example.edu  "},
-			want:   "alice@example.edu",
-		},
-		// Two spellings of one address are one person.
-		{
-			name:   "an address is lowercased",
-			claims: &Claims{Email: "Alice@Example.EDU"},
-			want:   "alice@example.edu",
-		},
-		{
-			name:   "an opaque id keeps its case",
-			claims: &Claims{Subject: "AbC-123"},
-			want:   "AbC-123",
-		},
+		{name: "nil claims", claims: nil, err: ErrNoEmail},
+		{name: "empty claims", claims: &Claims{}, err: ErrNoEmail},
+		{name: "address", claims: &Claims{Subject: "s1", Email: "alice@example.edu", PreferredUsername: "alice"}, want: "alice@example.edu"},
+		{name: "an address is lowercased", claims: &Claims{Email: "Alice@Example.EDU"}, want: "alice@example.edu"},
+		{name: "the answer is trimmed", claims: &Claims{Email: "  alice@example.edu  "}, want: "alice@example.edu"},
+		{name: "a service identity without a dot in the domain", claims: &Claims{Email: "alertmanager@platform"}, want: "alertmanager@platform"},
+		{name: "no fallback to preferred_username", claims: &Claims{Subject: "s1", PreferredUsername: "alice"}, err: ErrNoEmail},
+		{name: "no fallback to sub", claims: &Claims{Subject: "AbC-123"}, err: ErrNoEmail},
+		{name: "non-ASCII", claims: &Claims{Email: "jürgen@example.edu"}, err: ErrInvalidEmail},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.claims.Identity(); got != tc.want {
-				t.Errorf("Identity() = %q, want %q", got, tc.want)
+			got, err := tc.claims.CheckIdentity()
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("CheckIdentity() err = %v, want %v", err, tc.err)
+			}
+			if got != tc.want || tc.claims.Identity() != tc.want {
+				t.Errorf("CheckIdentity() = %q, Identity() = %q, want %q", got, tc.claims.Identity(), tc.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalEmail(t *testing.T) {
+	cases := []struct {
+		in, want string
+		err      error
+	}{
+		{in: "alice@example.edu", want: "alice@example.edu"},
+		{in: " Alice.B+tag@Sub.Example.EDU ", want: "alice.b+tag@sub.example.edu"},
+		{in: "o'brien@example.edu", want: "o'brien@example.edu"},
+		{in: "alertmanager@platform", want: "alertmanager@platform"},
+		{in: "", err: ErrNoEmail},
+		{in: "  ", err: ErrNoEmail},
+		{in: "alice", err: ErrInvalidEmail},
+		{in: "@example.edu", err: ErrInvalidEmail},
+		{in: "alice@", err: ErrInvalidEmail},
+		{in: "a@b@example.edu", err: ErrInvalidEmail},
+		{in: "a b@example.edu", err: ErrInvalidEmail},
+		{in: "a@x.de,b@x.de", err: ErrInvalidEmail},
+		{in: "a@x.de;b@x.de", err: ErrInvalidEmail},
+		{in: "Alice <alice@example.edu>", err: ErrInvalidEmail},
+		{in: `"a b"@example.edu`, err: ErrInvalidEmail},
+		{in: "a@[127.0.0.1]", err: ErrInvalidEmail},
+		{in: ".alice@example.edu", err: ErrInvalidEmail},
+		{in: "alice.@example.edu", err: ErrInvalidEmail},
+		{in: "al..ice@example.edu", err: ErrInvalidEmail},
+		{in: "alice@example..edu", err: ErrInvalidEmail},
+		{in: "alice@.example.edu", err: ErrInvalidEmail},
+		{in: "alice@example.edu.", err: ErrInvalidEmail},
+		{in: "alice\t@example.edu", err: ErrInvalidEmail},
+		{in: "alice\x00@example.edu", err: ErrInvalidEmail},
+		{in: "alice\x7f@example.edu", err: ErrInvalidEmail},
+		// Non-ASCII is refused, never folded: the Kelvin sign lowercases to an ASCII "k", the Cyrillic "а" looks like a Latin "a".
+		{in: "jürgen@example.edu", err: ErrInvalidEmail},
+		{in: "\u212Aarl@example.edu", err: ErrInvalidEmail},
+		{in: "\u0430lice@example.edu", err: ErrInvalidEmail},
+		{in: "alice@exämple.edu", err: ErrInvalidEmail},
+		{in: "alice@example.edu\u00a0", err: ErrInvalidEmail},
+		{in: strings.Repeat("a", 64) + "@" + strings.Repeat("b", 185) + ".edu", want: strings.Repeat("a", 64) + "@" + strings.Repeat("b", 185) + ".edu"},
+		{in: strings.Repeat("a", 64) + "@" + strings.Repeat("b", 186) + ".edu", err: ErrInvalidEmail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := CanonicalEmail(tc.in)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("CanonicalEmail(%q) err = %v, want %v", tc.in, err, tc.err)
+			}
+			if got != tc.want {
+				t.Errorf("CanonicalEmail(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -63,27 +143,20 @@ func TestClaimsIdentity(t *testing.T) {
 // The struct is unmarshalled straight from a verified ID token, so the claim
 // names are part of its contract rather than an implementation detail.
 func TestClaimsUnmarshalStandardClaimNames(t *testing.T) {
-	const token = `{
+	c := fromToken(t, `{
 		"sub": "8f14e45f",
 		"email": "alice@example.edu",
+		"email_verified": true,
 		"preferred_username": "alice",
 		"name": "Alice Example",
 		"aud": "ignored"
-	}`
+	}`)
 
-	var claims Claims
-	if err := json.Unmarshal([]byte(token), &claims); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
+	if c.Subject != "8f14e45f" || c.Email != "alice@example.edu" || !c.EmailVerified || c.PreferredUsername != "alice" || c.Name != "Alice Example" {
+		t.Errorf("got %+v", *c)
 	}
-
-	want := Claims{
-		Subject:           "8f14e45f",
-		Email:             "alice@example.edu",
-		PreferredUsername: "alice",
-		Name:              "Alice Example",
-	}
-	if claims != want {
-		t.Errorf("got %+v, want %+v", claims, want)
+	if err := json.Unmarshal([]byte(`{"sub": 5}`), new(Claims)); err == nil {
+		t.Error("a sub that is no string must not decode")
 	}
 }
 

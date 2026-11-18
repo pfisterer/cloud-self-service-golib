@@ -186,8 +186,11 @@ func Migrate(db *gorm.DB) error {
 // The one call both services want, and the reason it exists: NewStore alone
 // gives a Service that compiles, starts and fails at runtime if Migrate was
 // forgotten. Nothing about the type says the migration is required, so the
-// constructor does it.
+// constructor does it. An empty prefix is token.ErrNoPrefix (token.NewService would panic on it).
 func NewService(prefix string, db *gorm.DB) (*token.Service, error) {
+	if prefix == "" {
+		return nil, token.ErrNoPrefix
+	}
 	if err := Migrate(db); err != nil {
 		return nil, err
 	}

@@ -9,6 +9,7 @@ package redact
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -20,14 +21,34 @@ func Secret(s string) string {
 	return "set"
 }
 
-// ConnString redacts the password of a DSN and keeps the rest (host, user, dbname), so a broken connection is still diagnosable from the log: the key-value form ("host=db user=x password=secret …", libpq / GORM) and the URL form ("postgres://user:secret@host/db?password=…").
+// ConnString redacts the password of a DSN and keeps the rest (host, user, dbname), so a broken connection is still diagnosable from the log: the key-value form ("host=db user=x password=secret …", libpq / GORM) and the URL form ("postgres://user:secret@host/db?password=…") and the go-sql-driver/mysql form ("user:secret@tcp(host:3306)/db").
 //
 // The key is matched case-insensitively in both forms. In the key-value form a value may be quoted ('pa ss word', with \' and \\ inside) and may have blanks around its "="; the whole value goes, however many words it spans. A URL that does not parse is replaced as a whole, since there is no telling where its password is.
 func ConnString(dsn string) string {
 	if strings.Contains(dsn, "://") {
 		return connURL(dsn)
 	}
+	if !keyValueStart.MatchString(dsn) && strings.Contains(dsn, "@") {
+		return connMySQL(dsn)
+	}
 	return connKeyValue(dsn)
+}
+
+// keyValueStart is how a libpq key-value DSN begins: a key and "=". A MySQL DSN begins with "user:" or "user@" and never matches.
+var keyValueStart = regexp.MustCompile(`^\s*[A-Za-z_][A-Za-z0-9_]*\s*=`)
+
+// connMySQL redacts the password of a go-sql-driver/mysql DSN, "user:password@tcp(host:3306)/db?…". The driver splits at the last "@" before the last "/", so a password may itself hold "@", ":" or "/"; the same split is used here, and everything between the first ":" and that "@" goes. Without a "/" after it, the last "@" in the string is taken.
+func connMySQL(dsn string) string {
+	head := dsn
+	if slash := strings.LastIndex(dsn, "/"); slash >= 0 && strings.Contains(dsn[:slash], "@") {
+		head = dsn[:slash]
+	}
+	at := strings.LastIndex(head, "@")
+	user, password, hasPassword := strings.Cut(dsn[:at], ":")
+	if !hasPassword {
+		return dsn
+	}
+	return user + ":" + Secret(password) + dsn[at:]
 }
 
 func connURL(dsn string) string {

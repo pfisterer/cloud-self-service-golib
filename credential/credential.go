@@ -54,7 +54,7 @@ func (p Principal) Identity() string { return p.Claims.Identity() }
 
 // Resolve authenticates the value of an Authorization header. tokens may be nil for a service without API tokens, and verifier nil for one without sign-in.
 //
-// The cases, in this order: no bearer is ErrMissing; a bearer tokens owns is looked up — not found is ErrRejected, any other failure of the store comes back wrapped and is the service's own (500); every other bearer goes to verifier — none is ErrNoVerifier, keys that cannot be fetched are ErrKeysUnavailable, any other failure is ErrRejected. A token with the service's prefix is never sent to the verifier, whatever the store says.
+// The cases, in this order: no bearer is ErrMissing; a bearer tokens owns is looked up — not found is ErrRejected, any other failure of the store comes back wrapped and is the service's own (500); every other bearer goes to verifier — none is ErrNoVerifier, keys that cannot be fetched are ErrKeysUnavailable, any other failure is ErrRejected. A principal always has an identity: an API token whose subject is no identity (authn.CanonicalEmail) and claims without one (authn.Claims.CheckIdentity) are ErrRejected too. A token with the service's prefix is never sent to the verifier, whatever the store says.
 func Resolve(ctx context.Context, header string, tokens Tokens, verifier Verifier) (Principal, error) {
 	raw, ok := authn.CutBearerPrefix(header)
 	if !ok || raw == "" {
@@ -70,6 +70,10 @@ func Resolve(ctx context.Context, header string, tokens Tokens, verifier Verifie
 		case rec == nil:
 			return Principal{}, rejected{token.ErrNotFound}
 		}
+		// A subject that is no identity (a token issued before identities had to be plain e-mail addresses, under a username or a non-ASCII address) is refused rather than let in as a caller whose Identity() is "".
+		if _, err := authn.CanonicalEmail(rec.Subject); err != nil {
+			return Principal{}, rejected{fmt.Errorf("token subject: %w", err)}
+		}
 		return Principal{Claims: &authn.Claims{Email: rec.Subject}, Token: rec, ReadOnly: rec.ReadOnly}, nil
 	}
 	if verifier == nil || isNilPointer(verifier) {
@@ -84,6 +88,10 @@ func Resolve(ctx context.Context, header string, tokens Tokens, verifier Verifie
 	}
 	if claims == nil {
 		return Principal{}, rejected{errors.New("no claims")}
+	}
+	// oidcauth.Verify refuses these already; this holds for any other Verifier too.
+	if _, err := claims.CheckIdentity(); err != nil {
+		return Principal{}, rejected{err}
 	}
 	return Principal{Claims: claims}, nil
 }

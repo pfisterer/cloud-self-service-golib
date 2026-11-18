@@ -35,6 +35,11 @@ jobs:
         if: '!cancelled()'
         run: go test ./...
 
+      # Known vulnerabilities in the code and its dependencies, from the Go vulnerability database. Fails only for what the code actually reaches; a vulnerable module it never calls is listed, not failed. Pinned so a new scanner release cannot break the run on its own. Same step and version as in the services.
+      - name: govulncheck
+        if: '!cancelled()'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
       # go.mod declares the oldest Go version any consumer is on, so that
       # upgrading this library never forces a Go upgrade on a service. A stray
       # `go mod tidy` on a newer toolchain silently raises it, which would not

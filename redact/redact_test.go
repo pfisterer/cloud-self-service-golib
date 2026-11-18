@@ -76,3 +76,28 @@ func TestConnStringLeaks(t *testing.T) {
 		}
 	}
 }
+
+// go-sql-driver/mysql DSNs have no scheme and no key=value pairs, and dynamic-zones-api accepts DB_TYPE=mysql: before, the password went through to the log untouched.
+func TestConnStringMySQL(t *testing.T) {
+	for in, want := range map[string]string{
+		"app:secretword@tcp(db:3306)/core?parseTime=true":    "app:set@tcp(db:3306)/core?parseTime=true",
+		"app:secret@word@tcp(db:3306)/core":                  "app:set@tcp(db:3306)/core",
+		"app:secret:word@tcp(db:3306)/core":                  "app:set@tcp(db:3306)/core",
+		"app:secret/word@tcp(db:3306)/core":                  "app:set@tcp(db:3306)/core",
+		"app:secretword@unix(/var/run/mysqld.sock)/core":     "app:set@unix(/var/run/mysqld.sock)/core",
+		"app:secretword@/core":                               "app:set@/core",
+		"app:@tcp(db:3306)/core":                             "app:@tcp(db:3306)/core",
+		"app@tcp(db:3306)/core":                              "app@tcp(db:3306)/core",
+		"app:secretword@tcp(db:3306)/core?tls=a@b&loc=Local": "app:set@tcp(db:3306)/core?tls=a@b&loc=Local",
+		"/core":                     "/core",
+		"host=db user=a@b dbname=x": "host=db user=a@b dbname=x",
+	} {
+		got := ConnString(in)
+		if got != want {
+			t.Errorf("ConnString(%q) = %q, want %q", in, got, want)
+		}
+		if strings.Contains(got, "secret") {
+			t.Errorf("ConnString(%q) leaked: %q", in, got)
+		}
+	}
+}
